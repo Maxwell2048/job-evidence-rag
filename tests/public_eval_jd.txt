@@ -1,0 +1,9 @@
+FICTIONAL EVALUATION ONLY — Junior Web Developer
+
+Required
+Experience building Flask endpoints is required.
+Experience writing SQL JOIN queries is required.
+Experience collaborating through Git pull requests is required.
+
+Preferred
+Familiarity with Docker is desirable.

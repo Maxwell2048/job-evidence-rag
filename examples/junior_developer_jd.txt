@@ -1,0 +1,16 @@
+FICTIONAL DEMONSTRATION ONLY — Junior Python Developer
+
+This synthetic job description does not represent a real employer or vacancy.
+
+Required skills:
+- Experience building Python web applications with Flask.
+- Basic SQL knowledge, including joins and parameterized queries.
+- Ability to collaborate using Git and pull requests.
+
+Responsibilities:
+- Implement and test API endpoints.
+- Investigate bugs and explain changes to teammates.
+
+Preferred skills:
+- Familiarity with Docker.
+- Experience with automated testing.

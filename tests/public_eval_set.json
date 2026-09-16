@@ -1,0 +1,26 @@
+{
+  "description": "Synthetic smoke evaluation; not a benchmark or real applicant data.",
+  "extraction_jd": "public_eval_jd.txt",
+  "extraction_checks": [
+    {"line": "Experience building Flask endpoints is required.", "expect_importance": "required"},
+    {"line": "Familiarity with Docker is desirable.", "expect_importance": "preferred"}
+  ],
+  "cases": [
+    {"id": "F01", "text": "Experience building Flask endpoints", "category": "direct",
+     "search_query": "Python Flask booking creation cancellation endpoints",
+     "recall": ["demo_project"], "recall_sections": ["后端开发"],
+     "jd_line": "Experience building Flask endpoints is required.", "expected_verdict": "direct"},
+    {"id": "F02", "text": "Experience writing SQL JOIN queries", "category": "direct",
+     "search_query": "SQL JOIN database query users rooms bookings",
+     "recall": ["demo_project"], "recall_sections": ["SQL 与数据库"],
+     "jd_line": "Experience writing SQL JOIN queries is required.", "expected_verdict": "direct"},
+    {"id": "F03", "text": "Experience collaborating through Git pull requests", "category": "direct",
+     "search_query": "Git branches pull requests team collaboration code review merge conflicts",
+     "recall": ["demo_project"], "recall_sections": ["团队协作"],
+     "jd_line": "Experience collaborating through Git pull requests is required.", "expected_verdict": "direct"},
+    {"id": "F04", "text": "Familiarity with Docker", "category": "no_evidence",
+     "search_query": "Docker containers Dockerfile deployment",
+     "recall": [], "recall_sections": [],
+     "jd_line": "Familiarity with Docker is desirable.", "acceptable_verdicts": ["related", "insufficient"]}
+  ]
+}

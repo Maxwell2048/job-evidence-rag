@@ -1,0 +1,38 @@
+Senior Machine Learning Engineer
+
+We are hiring a machine learning engineer to join our team.
+
+Key Responsibilities
+
+Maintain image annotation guidelines and label definitions for the detection dataset.
+Assist with data cleanup, data entry and maintenance of system information.
+Provide first-line technical support to end-users via telephone and email.
+
+Required
+
+Experience annotating images for object detection is required.
+Experience training object detection models is required.
+Experience with hyperparameter tuning is required.
+Experience applying dimensionality reduction is required.
+Experience building ensemble classifiers is required.
+Experience with SVM classification experiments is required.
+Experience implementing regression models from scratch is required.
+Experience with face classification on LFW is required.
+Object detection evaluated on an independent test set is required.
+Improve classification accuracy using PCA is required.
+Deploy models to production on AWS is required.
+Three years of commercial Python development is required.
+Personally implemented a PostgreSQL backend is required.
+
+Preferred
+
+AWS experience is desirable.
+Experience with Kubernetes orchestration is desirable.
+
+Also required
+
+Experience with Java backend development is required.
+Experience with Redis caching is required.
+Python or Java is required.
+Three years of Python experience is required.
+Experience with PR curve evaluation of classifiers is required.
