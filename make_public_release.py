@@ -44,16 +44,16 @@ __pycache__/
 config.local.json
 
 # Private material: never commit your own corpus, resume, JDs or generated runs
-experiences/*
-!experiences/.gitkeep
-resume/*
-!resume/.gitkeep
-jobs/*
-!jobs/.gitkeep
-outputs/*
-!outputs/.gitkeep
-_sources/
-_review/
+/experiences/*
+!/experiences/.gitkeep
+/resume/*
+!/resume/.gitkeep
+/jobs/*
+!/jobs/.gitkeep
+/outputs/*
+!/outputs/.gitkeep
+/_sources/
+/_review/
 site/
 .claude/
 *.log
