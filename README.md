@@ -155,6 +155,8 @@ $runDir = 'outputs\YOUR_RUN_DIRECTORY'
 
 Preparation summaries separate evidence gaps from learning needs. The report shows a short priority list; JSON retains all requirement-level advice. If summary generation fails, matching results remain available and the summary can be retried separately.
 
+After requirement extraction, the local model screens location constraints before retrieval. Mandatory on-site or hybrid attendance outside Western Australia with no WA/remote-from-WA option stops the pipeline (CLI exit 3); the web page displays the JD evidence in a popup. Unknown or optional conditions do not automatically block. Screening relies on model interpretation and extracted location requirements; verified quotations establish source presence, not semantic accuracy.
+
 ## Outputs
 
 Matching creates `outputs/<timestamp>-<suffix>/`:

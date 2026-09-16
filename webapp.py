@@ -45,6 +45,10 @@ def run_command(args, cwd):
     return completed.returncode, completed.stdout, completed.stderr
 
 
+class LocationBlocked(RuntimeError):
+    pass
+
+
 class Job:
     def __init__(self, jd_name, with_interview):
         self.id = uuid.uuid4().hex[:8]
@@ -140,12 +144,16 @@ class Pipeline:
             self._step(job, "save", save)
 
             def match():
-                _, stdout, _ = self._cli("match_job.py", "--jd", str(job.jd_path), "--config",
-                                         str(self.config_path), "--offline", "--out", str(self.outputs_dir))
+                code, stdout, _ = self._cli("match_job.py", "--jd", str(job.jd_path), "--config",
+                                         str(self.config_path), "--offline", "--out", str(self.outputs_dir), ok_codes=(0, 3))
                 found = re.search(r"运行目录：(.+)", stdout)
                 if not found:
                     raise RuntimeError("match_job 未报告运行目录")
                 job.run_dir = Path(found.group(1).strip())
+                if code == 3:
+                    screen = json.loads((job.run_dir / "location_screen.json").read_text(encoding="utf-8"))
+                    raise LocationBlocked(screen["message"] + "\n地点依据：" + screen["location_quote"]
+                                          + "\n出勤依据：" + screen["attendance_quote"])
                 status = re.search(r"状态：(\S+)", stdout)
                 return status.group(1) if status else ""
             self._step(job, "match", match)
@@ -175,6 +183,13 @@ class Pipeline:
                     return "partial" if code == 1 else ""
                 self._step(job, "interview", interview)
             job.status = "done"
+        except LocationBlocked as exc:
+            job.status = "blocked"
+            job.error = str(exc)
+            job.stage("match")["status"] = "blocked"
+            for stage in job.stages:
+                if stage["status"] == "pending":
+                    stage["status"] = "skipped"
         except Exception as exc:  # noqa: BLE001
             job.status = "failed"
             job.error = str(exc)

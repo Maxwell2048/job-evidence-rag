@@ -254,7 +254,7 @@ class MatchJobCliTests(unittest.TestCase):
         run_dirs = list(self.out.iterdir())
         self.assertEqual(len(run_dirs), 1)
         files = {p.name for p in run_dirs[0].iterdir()}
-        self.assertEqual(files, {"jd.txt", "requirements.json", "run_meta.json"})
+        self.assertEqual(files, {"jd.txt", "requirements.json", "run_meta.json", "location_screen.json"})
         meta = json.loads((run_dirs[0] / "run_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["run_status"], "complete")
         self.assertEqual(meta["scope"], "extraction")
@@ -376,7 +376,7 @@ class MatchJobCliTests(unittest.TestCase):
         run_dirs = list(self.out.iterdir())
         self.assertEqual(len(run_dirs), 1)
         files = {p.name for p in run_dirs[0].iterdir()}
-        self.assertEqual(files, {"jd.txt", "requirements.json", "run_meta.json"})
+        self.assertEqual(files, {"jd.txt", "requirements.json", "run_meta.json", "location_screen.json"})
         saved = json.loads(
             (run_dirs[0] / "requirements.json").read_text(encoding="utf-8"))
         self.assertEqual(len(saved["requirements"]), 1)
@@ -452,7 +452,7 @@ class MatchJobCliTests(unittest.TestCase):
         self.assertEqual(len(run_dirs), 1)
         files = {p.name for p in run_dirs[0].iterdir()}
         self.assertEqual(files, {"jd.txt", "requirements.json", "matches.json",
-                                 "report.md", "run_meta.json", "job_summary.json"})
+                                 "report.md", "run_meta.json", "job_summary.json", "location_screen.json"})
         self.assertEqual(doc["job_summary"]["status"], "complete")
         matches_file = json.loads(
             (run_dirs[0] / "matches.json").read_text(encoding="utf-8"))

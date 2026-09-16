@@ -1,7 +1,7 @@
 """Match a saved job description (JD) against local project experiences.
 
 Exit codes: 0 = requested stage fully processed, 1 = failed or partial,
-2 = CLI argument error. The boundary is whether a run started: argparse
+2 = CLI argument error, 3 = blocked by location eligibility. The boundary is whether a run started: argparse
 rejects a malformed command with 2 and nothing is written; once a run
 directory and run_meta.json exist the run happened, so every later failure
 (unreadable JD, invalid config content, empty corpus, model unavailable) is 1
@@ -17,6 +17,7 @@ import uuid
 from pathlib import Path
 
 import jd_parser
+from location_gate import screen_location
 from local_llm import LLMError, build_llm, load_config
 from search_experience import MODEL as EMBEDDING_MODEL, ExperienceRetriever
 from evidence_matcher import (JUDGMENT_PROMPT_VERSION, EvidenceMatcher)
@@ -165,7 +166,17 @@ def execute(args, jd_path, config_path, run_dir, log):
             json.dumps(requirements_doc, ensure_ascii=False, indent=2),
             encoding="utf-8")
         result_doc = dict(requirements_doc)
-        if not doc["requirements"]:
+        log("[match-job] 正在审查工作地点限制……")
+        gate = screen_location(jd["text"], doc["requirements"], llm)
+        meta["location_screen"] = gate
+        result_doc["location_screen"] = gate
+        (run_dir / "location_screen.json").write_text(
+            json.dumps(gate, ensure_ascii=False, indent=2), encoding="utf-8")
+        if gate["status"] == "blocked":
+            meta["run_status"] = "blocked"
+            meta["errors"].append({"error_type": "location_ineligible", "message": gate["message"]})
+            log(gate["message"])
+        elif not doc["requirements"]:
             meta["run_status"] = "failed"
             if not meta["errors"]:
                 meta["errors"].append({"error_type": "extraction",
@@ -199,7 +210,7 @@ def execute(args, jd_path, config_path, run_dir, log):
             write_report(run_dir, meta, matches, doc["requirement_groups"], summary)
             result_doc["job_summary"] = summary
             result_doc["matches"] = matches
-        exit_code = 0 if meta["run_status"] == "complete" else 1
+        exit_code = 3 if meta["run_status"] == "blocked" else (0 if meta["run_status"] == "complete" else 1)
     except LLMError as exc:
         # ConfigError, ContextBudgetError, timeouts: each carries its error_type.
         meta["errors"].append({"error_type": exc.error_type, "message": str(exc)})

@@ -167,10 +167,10 @@ jd.addEventListener('input', () => { $('count').textContent = jd.value.length; }
 
 function setStage(s){
   const el = $('st-' + s.key); if(!el) return;
-  el.className = 'step ' + s.status;
+  el.className = 'step ' + (s.status === 'blocked' ? 'failed' : s.status);
   const node = el.querySelector('.node');
   if(s.status === 'done') node.innerHTML = ICON_CHECK;
-  else if(s.status === 'failed') node.innerHTML = '<span class="ic">✖</span>';
+  else if(s.status === 'failed' || s.status === 'blocked') node.innerHTML = '<span class="ic">✖</span>';
   const parts = [];
   if(s.seconds != null) parts.push(s.seconds + ' 秒');
   if(s.message) parts.push(s.message);
@@ -227,6 +227,7 @@ async function poll(id){
   j.stages.forEach(setStage); setFill(j.stages);
   if(j.status === 'running' || j.status === 'queued'){ poller = setTimeout(() => poll(id), 3000); return; }
   clearInterval(ticker); tick(); go.disabled = false;
+  if(j.status === 'blocked'){ msg.textContent = j.error; msg.className = 'msg bad'; window.alert(j.error); return; }
   if(j.status === 'failed'){ msg.textContent = '失败：' + (j.error || ''); msg.className = 'msg bad'; }
   else { msg.textContent = '完成 🎉'; msg.className = 'msg ok'; confetti(); }
   if(j.run_id) showResult(j);
@@ -239,6 +240,8 @@ async function poll(id){
     j.stages.forEach(setStage); setFill(j.stages);
     if(j.status === 'running' || j.status === 'queued'){
       go.disabled = true; msg.textContent = '上次提交的任务仍在生成中，已恢复进度显示。'; startedAt = Date.now(); ticker = setInterval(tick, 1000); poll(j.id);
+    } else if(j.status === 'blocked'){
+      msg.textContent = j.error; msg.className = 'msg bad'; window.alert(j.error);
     } else if(j.run_id){
       msg.textContent = j.status === 'done' ? '上次任务已完成。' : '上次任务失败：' + (j.error || ''); msg.className = j.status === 'done' ? 'msg ok' : 'msg bad';
       showResult(j);
