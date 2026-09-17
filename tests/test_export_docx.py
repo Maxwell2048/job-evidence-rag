@@ -220,6 +220,21 @@ B.Eng. Food Science (2020.09 – 2024.06)
             for cell in row.cells:
                 self.assertFalse(any(p.paragraph_format.keep_with_next for p in cell.paragraphs))
 
+    def test_chinese_text_is_never_exported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "resume_tailored.md").write_text(MD.replace("### GeoMind", "### 示例项目：地图标注系统\n### GeoMind", 1),
+                                                    encoding="utf-8")
+            with self.assertRaises(ValueError) as caught:
+                export_docx.export_run(run)
+            self.assertIn("含中文", str(caught.exception))
+            self.assertEqual(list(run.glob("*.docx")), [])
+            (run / "resume_tailored.md").write_text(MD, encoding="utf-8")
+            (run / "cv_suggestions.json").write_text(json.dumps({"cover_letter": [{"text": "我对这个职位很感兴趣。"}]}),
+                                                     encoding="utf-8")
+            with self.assertRaises(ValueError):
+                export_docx.export_run(run, with_letter=True)
+
     def test_missing_resume_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaises(ValueError):

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from local_llm import LLMError, build_llm, load_config
 from tailor_cv import (RESUME_ID, KIND_LABELS, UNVERIFIED_KINDS, CVTailor, _attach_sources, latest_output,
-                       load_materials, load_run, read_resume, requirement_summary, validate_basis,
+                       load_materials, load_run, non_english, read_resume, requirement_summary, validate_basis,
                        unique_output)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -40,7 +40,9 @@ tailored_projects（针对本岗位已生成并核对过来源的项目要点，
 5. 第一个 section 的第一行必须是底稿的第一行（姓名）原文；联系方式、学历、语言等信息来自底稿或 profile，逐字引用。
    summary 若提供，必须作为一个 section 出现，text 原样照抄并沿用其 basis。
 6. 同一项目不要重复出现：底稿中与 tailored_projects 同名的项目用 tailored 版本替换。
-7. 全文英文；整份简历控制在两页以内：KEY PROJECTS 最多 5 个项目、每个最多 4 条要点，ADDITIONAL/OTHER PROJECTS 最多 3 个项目、每个最多 2 条要点；按与岗位的相关度排序，最相关的放前面。超出的部分程序会按顺序裁掉。
+   tailored_projects 的子标题（heading）逐字使用它的 title；material_name 只是材料里的中文名，绝不能写进简历。
+   title 为空时，自己给出英文标题。
+7. 全文英文，任何一行都不得出现中文或全角标点（程序会逐行检查）；整份简历控制在两页以内：KEY PROJECTS 最多 5 个项目、每个最多 4 条要点，ADDITIONAL/OTHER PROJECTS 最多 3 个项目、每个最多 2 条要点；按与岗位的相关度排序，最相关的放前面。超出的部分程序会按顺序裁掉。
 8. 任何一行都不出现课程代码（CITS5505、GENG5505 之类）；项目标题只保留名称与类型，底稿标题里的课程代码要去掉。
 9. 输出紧凑 JSON：不缩进、不换行、不加 Markdown 代码围栏，避免输出过长被截断。"""
 
@@ -103,7 +105,9 @@ def build_payload(suggestions, materials, resume_entry, jd_text):
         for b in p["bullets"]:
             counter += 1
             bullets.append({"id": f"B{counter:02d}", "text": b["text"]})
-        projects.append({"project": p["project"], "bullets": bullets})
+        # "title" is the English heading from tailor_cv; "project" is the material's own
+        # (often Chinese) name and must never be copied into the resume.
+        projects.append({"title": p.get("title") or None, "material_name": p["project"], "bullets": bullets})
     return {
         "task_note": "组装最终英文简历。tailored_projects 的要点与 summary 用 ref 引用 id，程序回填文本与来源。",
         "jd_text": jd_text,
@@ -189,7 +193,7 @@ def validate_document(data, by_id, allowed, jd_text, required=(), refs=None):
                 continue  # program-filled and already validated upstream
             errors += validate_basis([line], by_id, allowed,
                                      label=f"第 {s_index} 节第 {l_index} 行", jd_text=jd_text,
-                                     no_course_codes=True)
+                                     no_course_codes=True, english_only=True)
         for l_index, line in enumerate(lines, 1):
             if line.get("_from_ref"):
                 continue  # the model cannot shorten program-filled text; asking it to only breaks the ref

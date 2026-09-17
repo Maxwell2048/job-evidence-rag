@@ -34,6 +34,29 @@ def setup_dir(tmp):
     return materials, resume_entry, suggestions
 
 
+class EnglishResumeTests(unittest.TestCase):
+    def test_tailored_projects_carry_the_english_title_not_the_material_name(self):
+        suggestions = {"projects": [{"project": "示例项目：地图标注系统", "title": "Sample Mapping Project  |  Map Annotation",
+                                     "bullets": [{"text": "Built a pipeline.", "basis": []}]}],
+                       "summary": None, "resume_review": [], "gaps": []}
+        payload = build_resume.build_payload(suggestions, [], {"text": "ALEX SAMPLE"}, "JD")
+        project = payload["tailored_projects"][0]
+        self.assertEqual(project["title"], "Sample Mapping Project  |  Map Annotation")
+        self.assertEqual(project["material_name"], "示例项目：地图标注系统")
+        self.assertNotIn("project", project)
+
+    def test_a_chinese_heading_fails_validation(self):
+        by_id = {"RESUME": {"text": "ALEX SAMPLE\nFinance Planner  |  Full-Stack Web App", "scope": "personal"}}
+        data = {"sections": [
+            {"title": "ALEX SAMPLE", "lines": [{"kind": "text", "text": "ALEX SAMPLE",
+                                               "basis": [{"material_id": "RESUME", "quote": "ALEX SAMPLE"}]}]},
+            {"title": "KEY PROJECTS", "lines": [{"kind": "heading", "text": "示例项目：地图标注系统",
+                                                "basis": [{"material_id": "RESUME",
+                                                           "quote": "Finance Planner  |  Full-Stack Web App"}]}]}]}
+        errors = build_resume.validate_document(data, by_id, ["RESUME"], "JD")
+        self.assertTrue(any("第 2 节第 1 行含中文" in e for e in errors), errors)
+
+
 class PayloadTests(unittest.TestCase):
     def test_allowed_ids_and_payload(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -189,6 +189,29 @@ def quote_in(quote, text):
 
 
 _CJK = re.compile(r"[\u4e00-\u9fff]")
+# Chinese, Japanese and Korean text plus full-width punctuation such as ：（），
+NON_ENGLISH = re.compile(r"[\u3000-\u303f\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af"
+                         r"\uf900-\ufaff\uff00-\uffef]+")
+MAX_TITLE_CHARS = 90
+
+
+def non_english(text):
+    """The first run of CJK characters or full-width punctuation in text, or None."""
+    match = NON_ENGLISH.search(text or "")
+    return match.group(0) if match else None
+
+
+def english_title_errors(title, project):
+    """A resume heading for a project whose material title is in Chinese."""
+    if not isinstance(title, str) or not title.strip():
+        return [f"缺少 title：为项目“{project}”给出英文简历标题，格式如 “Project Name  |  Type”"]
+    errors = []
+    if non_english(title):
+        errors.append(f"title 含中文或全角字符 {non_english(title)!r}：简历标题必须全英文，"
+                      "把项目名意译成英文，如 “Job Evidence RAG  |  LLM Application”")
+    if len(title) > MAX_TITLE_CHARS:
+        errors.append(f"title 有 {len(title)} 个字符，超过 {MAX_TITLE_CHARS}；只保留项目名与类型")
+    return errors
 
 
 def looks_translated(quote, material_text):
@@ -205,7 +228,8 @@ def personal_ids(materials_by_id, allowed_ids):
 
 def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
                    label="第 {index} 条", jd_text=None, require_personal=False,
-                   no_course_codes=False, allow_jd_names=False, prune_quotes=False, max_chars=None):
+                   no_course_codes=False, allow_jd_names=False, prune_quotes=False, max_chars=None,
+                   english_only=False):
     """Every item must cite existing materials with verbatim quotes, and every
     number in its text must appear in the cited materials (or the allowed
     material pool for that call). A quote that is JD wording rather than
@@ -230,6 +254,9 @@ def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
         if no_course_codes and COURSE_CODE.search(text):
             errors.append(f"{who}含课程代码 {COURSE_CODE.search(text).group(0)}；简历内容不写课程代码，"
                           "删除它或改为项目性质描述（如 individual project / group project）")
+        if english_only and non_english(text):
+            errors.append(f"{who}含中文或全角字符 {non_english(text)!r}；简历和求职信必须全英文"
+                          "（quote 保持材料原文语言，但正文与标题一律写英文）")
         if max_chars and len(text) > max_chars:
             errors.append(f"{who}有 {len(text)} 个字符，超过上限 {max_chars}；请压缩")
         basis = item.get("basis") or []
@@ -312,9 +339,10 @@ JD 要求列表里 verdict=insufficient 的要求没有证据支持，不要在�
 
 BULLETS_SCHEMA = {
     "type": "object",
-    "required": ["bullets", "note"],
+    "required": ["title", "bullets", "note"],
     "additionalProperties": False,
     "properties": {
+        "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_CHARS},
         "bullets": {
             "type": "array",
             "maxItems": MAX_BULLETS,
@@ -389,8 +417,10 @@ class CVTailor:
         entries = self.by_project[project]
         allowed = [e["material_id"] for e in entries] + [RESUME_ID]
         payload = {
-            "task_note": f"为项目“{project}”写最多 {MAX_BULLETS} 条针对本 JD 的简历要点；"
-                         "优先覆盖 verdict=direct/related 的要求；requirement_ids 列出每条要点对应的 JD 要求。",
+            "task_note": f"为项目“{project}”写最多 {MAX_BULLETS} 条针对本 JD 的英文简历要点；"
+                         "优先覆盖 verdict=direct/related 的要求；requirement_ids 列出每条要点对应的 JD 要求。"
+                         "title 是这个项目在英文简历里的标题，全英文，格式“Project Name  |  Type”："
+                         "resume_draft 里已有该项目的英文标题就沿用，否则把项目名意译成英文，不得出现中文。",
             "jd_requirements": requirements,
             "materials": self._visible(entries),
             "resume_draft": {"material_id": RESUME_ID, "text": self.resume["text"]},
@@ -405,8 +435,9 @@ class CVTailor:
                                error_type="context_budget")
         data = self.llm.generate_json(
             task, SYSTEM_PROMPT, payload, BULLETS_SCHEMA, self.timeout,
-            validate=lambda d: validate_basis(d.get("bullets", []), self.by_id, allowed,
-                                              require_personal=True, no_course_codes=True))
+            validate=lambda d: english_title_errors(d.get("title"), project)
+            + validate_basis(d.get("bullets", []), self.by_id, allowed,
+                             require_personal=True, no_course_codes=True, english_only=True))
         return data
 
     def resume_review(self, requirements):
@@ -467,7 +498,8 @@ class CVTailor:
             task, SYSTEM_PROMPT, payload, SUMMARY_SCHEMA, self.timeout,
             validate=lambda d: validate_basis([d.get("summary", {})], self.by_id, allowed, label="summary ",
                                               jd_text=jd_text, require_personal=True, no_course_codes=True,
-                                              prune_quotes=True, max_chars=MAX_SUMMARY_CHARS))
+                                              prune_quotes=True, max_chars=MAX_SUMMARY_CHARS,
+                                              english_only=True))
 
     def cover_letter(self, requirements, ordered_bullets, gap_list, jd_text):
         task = "cv_cover_letter"
@@ -478,7 +510,8 @@ class CVTailor:
             task, SYSTEM_PROMPT, payload, COVER_LETTER_SCHEMA, self.timeout,
             validate=lambda d: validate_basis(d.get("cover_letter", []), self.by_id, allowed,
                                               label="cover_letter 第 {index} 段", jd_text=jd_text,
-                                              require_personal=True, no_course_codes=True, prune_quotes=True))
+                                              require_personal=True, no_course_codes=True, prune_quotes=True,
+                                              english_only=True, allow_jd_names=True))
 
 
 def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
@@ -509,7 +542,8 @@ def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
             result["errors"].append({"step": f"bullets:{project}", "error_type": exc.error_type,
                                      "message": str(exc)})
             continue
-        result["projects"].append({"project": project, "note": data.get("note", ""),
+        result["projects"].append({"project": project, "title": data.get("title", "").strip(),
+                                   "note": data.get("note", ""),
                                    "bullets": [_attach_sources(b, tailor_obj.by_id)
                                                for b in data.get("bullets", [])]})
     try:
@@ -620,7 +654,7 @@ def write_markdown(result, meta, matches, resume_path, out_path):
     if not result["projects"]:
         lines.append("（无：要点生成步骤失败或没有可用项目）")
     for p in result["projects"]:
-        lines += [f"### {p['project']}", ""]
+        lines += [f"### {p['project']}", ""] + ([f"简历标题：{p['title']}", ""] if p.get("title") else [])
         if p.get("note"):
             lines += [f"说明：{p['note']}", ""]
         for b in p["bullets"]:
