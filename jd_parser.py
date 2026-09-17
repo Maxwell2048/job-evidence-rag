@@ -385,6 +385,26 @@ def _locate_span(jd_text, quote, context, notes, label):
             "line_end": line_end, "match": mode}
 
 
+def _locate_qualifier(jd_text, quote, requirement_span, context, notes, label):
+    """A qualifier belongs to its requirement's sentence, so look there first.
+
+    Short qualifier words such as 'Basic' or 'Strong' often occur several
+    times in a JD; searching the whole text would be ambiguous even though
+    the occurrence inside the requirement's own quote is unique."""
+    if requirement_span is not None:
+        start, end = requirement_span["start"], requirement_span["end"]
+        try:
+            located = locate_quote(jd_text[start:end], quote)
+        except AmbiguousQuoteError:
+            located = None
+        if located is not None:
+            inner_start, inner_end, mode = located
+            line_start, line_end = span_to_lines(jd_text, start + inner_start, start + inner_end)
+            return {"start": start + inner_start, "end": start + inner_end,
+                    "line_start": line_start, "line_end": line_end, "match": mode}
+    return _locate_span(jd_text, quote, context, notes, label)
+
+
 def _finalize_requirement(item, index, jd_text, notes):
     requirement_id = f"R{index:03d}"
     context = item.get("source_context", "")
@@ -395,9 +415,9 @@ def _finalize_requirement(item, index, jd_text, notes):
                                    f"{requirement_id}.importance_source_quote")
     qualifiers = []
     for qualifier in item.get("qualifiers", []):
-        qualifier_span = _locate_span(jd_text, qualifier["source_quote"], context,
-                                      notes,
-                                      f"{requirement_id}.qualifier[{qualifier['type']}]")
+        qualifier_span = _locate_qualifier(jd_text, qualifier["source_quote"], source_span,
+                                           context, notes,
+                                           f"{requirement_id}.qualifier[{qualifier['type']}]")
         qualifiers.append({
             "type": qualifier["type"],
             "value": qualifier["value"],

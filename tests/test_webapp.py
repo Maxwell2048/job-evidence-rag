@@ -15,9 +15,10 @@ JD = "Senior Data Engineer\n\nRequired\n" + "Experience with SQL and Python. " *
 class FakeRunner:
     """Simulates the CLI tools by writing the files each stage would produce."""
 
-    def __init__(self, outputs_dir, fail_at=None):
+    def __init__(self, outputs_dir, fail_at=None, match_status="complete"):
         self.outputs_dir = Path(outputs_dir)
         self.fail_at = fail_at
+        self.match_status = match_status
         self.calls = []
 
     def __call__(self, args, cwd):
@@ -28,13 +29,22 @@ class FakeRunner:
         if script == "match_job.py":
             run = self.outputs_dir / "20260912-000000-abcdef"
             run.mkdir(parents=True, exist_ok=True)
+            errors = [] if self.match_status == "complete" else [
+                {"error_type": "judgment_failed", "message": "R002（error）：引用不是章节原文"}]
             (run / "run_meta.json").write_text(json.dumps({
-                "run_id": run.name, "run_status": "complete", "scope": "full",
+                "run_id": run.name, "run_status": self.match_status, "scope": "full", "errors": errors,
                 "started_at": "2026-09-12T00:00:00", "input": {"jd_path": "jobs/x.txt"}}), encoding="utf-8")
-            (run / "matches.json").write_text(json.dumps({"matches": [
-                {"processing_status": "ok", "verdict": "direct"}]}), encoding="utf-8")
-            (run / "report.md").write_text("# 报告\n", encoding="utf-8")
-            return 0, f"运行目录：{run}\n状态：complete（范围：full）\n", ""
+            if self.match_status != "failed":
+                matches = [{"requirement_id": "R001", "processing_status": "ok", "verdict": "direct"}]
+                if self.match_status == "partial":
+                    matches.append({"requirement_id": "R002", "processing_status": "error",
+                                    "verdict": "insufficient"})
+                (run / "matches.json").write_text(json.dumps({"matches": matches}), encoding="utf-8")
+                (run / "report.md").write_text("# 报告\n", encoding="utf-8")
+            code = 0 if self.match_status == "complete" else 1
+            # The stderr tail deliberately looks like an unrelated retry log, as in the real failure.
+            return code, f"运行目录：{run}\n状态：{self.match_status}（范围：full）\n", \
+                "[local-llm] job_readiness_summary 第 1 次尝试未通过校验"
         run = self.outputs_dir / "20260912-000000-abcdef"
         if script == "tailor_cv.py":
             (run / "cv_suggestions.md").write_text("# CV 建议\n", encoding="utf-8")
@@ -86,6 +96,31 @@ class PipelineTests(unittest.TestCase):
             docs, downloads = webapp.run_documents(job.run_dir)
             self.assertEqual([d["stem"] for d in docs], ["report", "cv_suggestions", "resume_tailored", "interview_prep"])
             self.assertIn("resume_tailored.docx", downloads)
+
+    def test_partial_match_continues_with_a_clear_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = Path(tmp) / "outputs"
+            runner = FakeRunner(outputs, match_status="partial")
+            pipe = OnlinePipeline(project_root=Path(tmp), jobs_dir=Path(tmp) / "jobs", outputs_dir=outputs,
+                                  runner=runner)
+            job = wait_for(pipe.start(JD, "", False))
+            self.assertEqual(job.status, "done", job.error)
+            message = job.stage("match")["message"]
+            self.assertIn("partial：2 条要求中 1 条未处理（R002）", message)
+            self.assertIn("build_resume.py", runner.calls)  # the pipeline went on
+
+    def test_failed_match_reports_recorded_errors_not_stderr_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = Path(tmp) / "outputs"
+            runner = FakeRunner(outputs, match_status="failed")
+            pipe = OnlinePipeline(project_root=Path(tmp), jobs_dir=Path(tmp) / "jobs", outputs_dir=outputs,
+                                  runner=runner)
+            job = wait_for(pipe.start(JD, "", False))
+            self.assertEqual(job.status, "failed")
+            self.assertIn("匹配失败（failed）", job.error)
+            self.assertIn("引用不是章节原文", job.error)
+            self.assertNotIn("job_readiness_summary", job.error)
+            self.assertEqual(runner.calls, ["match_job.py"])
 
     def test_failure_marks_stage_and_job(self):
         with tempfile.TemporaryDirectory() as tmp:

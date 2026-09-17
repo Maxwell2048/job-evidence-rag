@@ -115,6 +115,45 @@ def _requirement_payload(requirement):
     }
 
 
+_QUOTE_NOISE = re.compile(r"[\s\-–—_/,.;:()\[\]\"'“”‘’*`#，。；：（）、]")
+MIN_LOOSE_QUOTE = 8
+
+
+def _loose_chars(text):
+    """Characters that carry meaning, case-folded, with their offsets in text."""
+    chars, offsets = [], []
+    for index, char in enumerate(text):
+        if _QUOTE_NOISE.match(char):
+            continue
+        for folded in char.casefold():
+            chars.append(folded)
+            offsets.append(index)
+    return "".join(chars), offsets
+
+
+def repair_quote(quote, text):
+    """The verbatim slice of text that a quote stands for, or None.
+
+    Models often change only case, spacing, punctuation or Markdown marks when
+    copying a sentence. Such a quote is mapped back to the original characters,
+    so what gets stored and shown is always real source text. Words must still
+    appear in full and in order; very short loose matches are refused."""
+    if not isinstance(quote, str) or not quote.strip():
+        return None
+    if quote in text:
+        return quote
+    loose_quote, _ = _loose_chars(quote)
+    if len(loose_quote) < MIN_LOOSE_QUOTE:
+        return None
+    loose_text, offsets = _loose_chars(text)
+    position = loose_text.find(loose_quote)
+    if position < 0:
+        return None
+    start = offsets[position]
+    end = offsets[position + len(loose_quote) - 1] + 1
+    return text[start:end]
+
+
 def validate_judgment(result, requirement_id, text_by_id):
     """Program-side checks on a schema-valid judgment. Returns (errors, valid)."""
     errors = []
@@ -127,9 +166,10 @@ def validate_judgment(result, requirement_id, text_by_id):
         if candidate_id not in text_by_id:
             errors.append(f"candidate_id 不属于当前候选集：{candidate_id!r}")
             continue
-        if quote in text_by_id[candidate_id]:
-            if {"candidate_id": candidate_id, "quote": quote} not in valid:
-                valid.append({"candidate_id": candidate_id, "quote": quote})
+        verbatim = repair_quote(quote, text_by_id[candidate_id])
+        if verbatim is not None:
+            if {"candidate_id": candidate_id, "quote": verbatim} not in valid:
+                valid.append({"candidate_id": candidate_id, "quote": verbatim})
         else:
             errors.append(f"{candidate_id} 的引用不是章节完整原文的连续子串")
     verdict = result.get("verdict")
@@ -236,8 +276,11 @@ class EvidenceMatcher:
         # section, not only in the batch slice the model was shown.
         verified = []
         for item in evidence:
-            if item["quote"] in parent_by_id[item["candidate_id"]]["text"]:
-                verified.append(item)
+            verbatim = repair_quote(item["quote"], parent_by_id[item["candidate_id"]]["text"])
+            if verbatim is not None:
+                repaired = {"candidate_id": item["candidate_id"], "quote": verbatim}
+                if repaired not in verified:
+                    verified.append(repaired)
             else:
                 errors.append(f"{item['candidate_id']} 的引用不是章节完整原文的"
                               "连续子串，已丢弃该引用")

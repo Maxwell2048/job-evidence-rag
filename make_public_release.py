@@ -32,6 +32,7 @@ INCLUDE_TESTS = [
     "test_job_summary.py", "test_local_llm.py", "test_match_job.py", "test_report_writer.py",
     "test_retriever.py", "test_sources.py", "test_tailor_cv.py", "test_webapp.py",
     "test_public_release.py", "test_public_eval.py", "test_location_gate.py",
+    "test_quote_tolerance.py",
 ]
 KEEP_DIRS = ["experiences", "resume", "jobs", "outputs"]
 

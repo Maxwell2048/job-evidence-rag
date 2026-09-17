@@ -194,13 +194,15 @@ def personal_ids(materials_by_id, allowed_ids):
 
 def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
                    label="第 {index} 条", jd_text=None, require_personal=False,
-                   no_course_codes=False):
+                   no_course_codes=False, allow_jd_names=False):
     """Every item must cite existing materials with verbatim quotes, and every
     number in its text must appear in the cited materials (or the allowed
     material pool for that call). A quote that is JD wording rather than
     material text is named as such so the retry can correct it. With
     require_personal, an item citing only team/background sections is rejected;
-    with no_course_codes, resume text containing unit codes is rejected."""
+    with no_course_codes, resume text containing unit codes is rejected; with
+    allow_jd_names, a number inside a product or standard name taken from the
+    JD ('Microsoft 365') is not treated as an invented figure."""
     errors = []
     pool_text = "\n".join(materials_by_id[i]["text"] for i in allowed_ids)
     own = personal_ids(materials_by_id, allowed_ids)
@@ -231,6 +233,8 @@ def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
                 errors.append(f"{who}对 {mid} 的 quote 不是该材料的逐字连续原文："
                               f"{quote[:60]!r}{hint}")
         for number in NUMBER.findall(text):
+            if allow_jd_names and jd_name_number(number, text, jd_text):
+                continue
             if not number_supported(number, pool_text):
                 errors.append(f"{who}包含材料中没有的数字 {number!r}；"
                               "不要新增或换算数字")
@@ -247,6 +251,21 @@ def number_supported(number, pool_text):
         return True
     plain = _THOUSANDS.sub("", number)
     return plain in _THOUSANDS.sub("", pool_text)
+
+
+_JD_NAME = re.compile(r"\b[A-Z][A-Za-z]+[ \-](\d[\d,.]*\d|\d)\b"
+                      r"(?!\s*(?:\+|%|years?|yrs?|months?|weeks?|days?|hours?)\b)")
+
+
+def jd_name_number(number, text, jd_text):
+    """True when the number is part of a name the JD itself uses, such as
+    'Microsoft 365' or 'ISO 27001', and the text repeats that exact name.
+    Quantities like '5 years' never qualify."""
+    if not jd_text:
+        return False
+    lowered = text.casefold()
+    return any(match.group(1) == number and match.group(0).casefold() in lowered
+               for match in _JD_NAME.finditer(jd_text))
 
 
 def validate_quotes_in(items, text, key="quote"):

@@ -240,9 +240,17 @@ class EvidenceMatcherTests(unittest.TestCase):
         self.assertIsNone(result["verdict"])
         self.assertTrue(result["errors"])
 
+    def test_spacing_only_difference_is_repaired_to_the_verbatim_text(self):
+        retriever = FakeRetriever({"标注": [SECTION_A]})
+        loose_quote = "完成并提交一批12幅示例地图的标注"  # original has spaces
+        llm = FakeLLM([judgment("R001", "direct", quotes=[("E001", loose_quote)])])
+        result = make_matcher(llm, retriever).match_requirement(make_requirement())
+        self.assertEqual(result["processing_status"], "ok")
+        self.assertEqual(result["evidence"][0]["quote"], "完成并提交一批 12 幅示例地图的标注")
+
     def test_quote_not_in_full_text_fails(self):
         retriever = FakeRetriever({"标注": [SECTION_A]})
-        bad_quote = "完成并提交一批12幅示例地图的标注"  # original has spaces
+        bad_quote = "完成并提交一批 120 幅示例地图的标注"  # the number was changed
         llm = FakeLLM([judgment("R001", "direct", quotes=[("E001", bad_quote)])] * 2)
         result = make_matcher(llm, retriever).match_requirement(make_requirement())
         self.assertEqual(result["processing_status"], "error")

@@ -134,6 +134,24 @@ class Pipeline:
             raise RuntimeError(f"{script} 退出码 {code}：{tail}")
         return code, stdout, stderr
 
+    @staticmethod
+    def _partial_match_message(run_dir):
+        """A partial match (some requirements unprocessed) continues: downstream
+        tools list unprocessed items as gaps. A failed run, or one without
+        matches, stops with the recorded errors rather than a stderr tail."""
+        run_dir = Path(run_dir)
+        try:
+            meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        errors = "；".join(e.get("message", "")[:160] for e in meta.get("errors", [])[:3])
+        if meta.get("run_status") != "partial" or not (run_dir / "matches.json").exists():
+            raise RuntimeError(f"匹配失败（{meta.get('run_status', '状态未知')}）：{errors or '见 run_meta.json'}")
+        matches = json.loads((run_dir / "matches.json").read_text(encoding="utf-8")).get("matches", [])
+        unprocessed = [m["requirement_id"] for m in matches if m.get("processing_status") != "ok"]
+        return (f"partial：{len(matches)} 条要求中 {len(unprocessed)} 条未处理"
+                f"（{'、'.join(unprocessed[:6])}），已继续；详见匹配报告")
+
     def _run(self, job, jd_text):
         job.status = "running"
         try:
@@ -144,16 +162,22 @@ class Pipeline:
             self._step(job, "save", save)
 
             def match():
-                code, stdout, _ = self._cli("match_job.py", "--jd", str(job.jd_path), "--config",
-                                         str(self.config_path), "--offline", "--out", str(self.outputs_dir), ok_codes=(0, 3))
+                # Exit 1 covers both "failed" and "partial"; only the run metadata tells
+                # them apart, so accept it here and decide below.
+                code, stdout, stderr = self._cli("match_job.py", "--jd", str(job.jd_path), "--config",
+                                                 str(self.config_path), "--offline", "--out",
+                                                 str(self.outputs_dir), ok_codes=(0, 1, 3))
                 found = re.search(r"运行目录：(.+)", stdout)
                 if not found:
-                    raise RuntimeError("match_job 未报告运行目录")
+                    tail = "\n".join((stderr or stdout).strip().splitlines()[-3:])
+                    raise RuntimeError(f"match_job 未报告运行目录（退出码 {code}）：{tail}")
                 job.run_dir = Path(found.group(1).strip())
                 if code == 3:
                     screen = json.loads((job.run_dir / "location_screen.json").read_text(encoding="utf-8"))
                     raise LocationBlocked(screen["message"] + "\n地点依据：" + screen["location_quote"]
                                           + "\n出勤依据：" + screen["attendance_quote"])
+                if code == 1:
+                    return self._partial_match_message(job.run_dir)
                 status = re.search(r"状态：(\S+)", stdout)
                 return status.group(1) if status else ""
             self._step(job, "match", match)

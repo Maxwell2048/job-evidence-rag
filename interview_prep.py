@@ -20,7 +20,7 @@ from pathlib import Path
 
 from local_llm import LLMError, build_llm, load_config
 from tailor_cv import (IMPORTANCE_LABELS, KIND_LABELS, NUMBER, VERDICT_LABELS,
-                       latest_output, load_materials, load_run, number_supported, personal_ids,
+                       jd_name_number, latest_output, load_materials, load_run, number_supported, personal_ids,
                        unique_output, validate_basis)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -149,12 +149,15 @@ def validate_items(data, batch_ids, by_id, allowed, jd_text):
 def validate_answer(points, by_id, allowed, jd_text, label="第 {index} 个 point"):
     errors = []
     with_basis = [p for p in points if p.get("part") != "Honest" or p.get("basis")]
-    errors += validate_basis(with_basis, by_id, allowed, label=label, jd_text=jd_text)
+    errors += validate_basis(with_basis, by_id, allowed, label=label, jd_text=jd_text,
+                             allow_jd_names=True)
     pool = "\n".join(by_id[i]["text"] for i in allowed)
     for index, point in enumerate(points, 1):
         if point.get("part") == "Honest" and not point.get("basis"):
             text = point.get("text", "")
             for number in NUMBER.findall(text):
+                if jd_name_number(number, text, jd_text):
+                    continue
                 if not number_supported(number, pool):
                     errors.append(f"{label.format(index=index)}（Honest）含材料中没有的数字 {number!r}")
             lowered = text.lower()
