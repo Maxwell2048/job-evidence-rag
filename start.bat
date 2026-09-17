@@ -21,8 +21,8 @@ if not exist "config.local.json" (
     goto :fail
 )
 
-if not exist "resumease_resume.docx" (
-    echo [!] 缺少 resumease_resume.docx（简历底稿）。把底稿放到 resume\ 目录后再启动。
+if not exist "resume\base_resume.docx" (
+    echo [!] 缺少 resume\base_resume.docx（简历底稿）。把底稿放到 resume\ 目录后再启动。
     goto :fail
 )
 
