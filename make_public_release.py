@@ -95,9 +95,13 @@ def copy_tree(out):
     out = validate_destination(out)
     files = INCLUDE_FILES + [f"tests/{name}" for name in INCLUDE_TESTS]
     # Resolve and validate every allowlisted input before writing anything.
+    # A link anywhere below the project root changes the resolved path. Compare
+    # against the resolved root: the root itself may legitimately be spelled
+    # differently (Windows 8.3 short names such as RUNNER~1 in temp paths).
+    root = PROJECT_ROOT.resolve()
     for rel in files:
         src = PROJECT_ROOT / rel
-        if not src.is_file() or src.resolve() != src.absolute():
+        if not src.is_file() or src.resolve() != root / rel:
             raise ValueError(f"Missing or linked source file: {rel}")
     out.mkdir(parents=True, exist_ok=True)
     for rel in files:
