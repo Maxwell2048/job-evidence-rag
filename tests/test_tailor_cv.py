@@ -225,6 +225,35 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("（未生成）", md)
 
 
+class RedoClosingTests(unittest.TestCase):
+    def test_only_the_missing_cover_letter_is_regenerated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "synthetic_project.md").write_text(EXPERIENCE, encoding="utf-8")
+            (data / "profile.md").write_text(PROFILE, encoding="utf-8")
+            materials, by_project, resume_entry = tailor_cv.load_materials(data, RESUME)
+            earlier = {"projects": [], "gaps": [], "resume_review": [], "cover_letter": [], "warnings": [],
+                       "summary": {"text": "IT graduate.", "basis": []}, "status": "partial",
+                       "errors": [{"step": "cover_letter", "error_type": "structure", "message": "x"},
+                                  {"step": "bullets:Other", "error_type": "timeout", "message": "y"}]}
+            llm = FakeLLM([{"cover_letter": [{"text": "Dear team, I hold a Master of IT.",
+                                              "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}]}])
+            result = tailor_cv.redo_closing(llm, earlier, [make_match("R001", "direct")], "JD text",
+                                            materials, by_project, resume_entry)
+            self.assertEqual([c[0] for c in llm.calls], ["cv_cover_letter"])  # summary and bullets untouched
+            self.assertEqual(result["summary"]["text"], "IT graduate.")
+            self.assertEqual(len(result["cover_letter"]), 1)
+            self.assertEqual([e["step"] for e in result["errors"]], ["bullets:Other"])
+
+    def test_translated_quote_gets_a_specific_hint(self):
+        by_id = {"M001": {"text": "我使用多语言 E5 模型做个人经历章节的向量检索。", "scope": "personal"}}
+        item = {"text": "I built retrieval.", "basis": [{"material_id": "M001",
+                                                         "quote": "E5 multilingual vector retrieval of chapters"}]}
+        errors = tailor_cv.validate_basis([item], by_id, ["M001"])
+        self.assertIn("不要翻译", errors[0])
+        self.assertFalse(tailor_cv.looks_translated("Annotated 12 maps", "Annotated 12 sample maps in LabelMe."))
+
+
 class MaterialKindTests(unittest.TestCase):
     def test_unverified_files_are_labelled_and_still_ranked(self):
         with tempfile.TemporaryDirectory() as tmp:

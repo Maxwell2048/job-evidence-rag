@@ -169,7 +169,7 @@ NUMBER = re.compile(r"\d[\d,.]*\d|\d")
 COURSE_CODE = re.compile(r"\b[A-Z]{4}\d{4}\b")
 
 
-_LOOSE = re.compile(r"[\s\-–—_/,.;:()\[\]\"'“”‘’]+")
+_LOOSE = re.compile(r"[\s\-–—_/,.;:()\[\]\"'“”‘’\u3001\uff0c\u3002\uff1b\uff1a\uff08\uff09]+")
 
 
 def _loose(text):
@@ -188,13 +188,24 @@ def quote_in(quote, text):
     return bool(loose_quote) and loose_quote in _loose(text)
 
 
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+
+
+def looks_translated(quote, material_text):
+    """An all-English quote offered for a material written mainly in Chinese:
+    the model translated the sentence instead of copying it."""
+    if _CJK.search(quote) or not material_text:
+        return False
+    return len(_CJK.findall(material_text)) > 0.3 * len(material_text.replace(" ", ""))
+
+
 def personal_ids(materials_by_id, allowed_ids):
     return {i for i in allowed_ids if materials_by_id[i].get("scope", "personal") == "personal"}
 
 
 def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
                    label="第 {index} 条", jd_text=None, require_personal=False,
-                   no_course_codes=False, allow_jd_names=False):
+                   no_course_codes=False, allow_jd_names=False, prune_quotes=False, max_chars=None):
     """Every item must cite existing materials with verbatim quotes, and every
     number in its text must appear in the cited materials (or the allowed
     material pool for that call). A quote that is JD wording rather than
@@ -202,7 +213,11 @@ def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
     require_personal, an item citing only team/background sections is rejected;
     with no_course_codes, resume text containing unit codes is rejected; with
     allow_jd_names, a number inside a product or standard name taken from the
-    JD ('Microsoft 365') is not treated as an invented figure."""
+    JD ('Microsoft 365') is not treated as an invented figure. With prune_quotes,
+    a citation that fails the verbatim check is removed from the item (in place)
+    as long as another valid citation remains, the way the matcher drops bad
+    quotes: one slip in a long letter should not void the whole text, and what
+    is kept and shown is still only verified source text."""
     errors = []
     pool_text = "\n".join(materials_by_id[i]["text"] for i in allowed_ids)
     own = personal_ids(materials_by_id, allowed_ids)
@@ -215,23 +230,33 @@ def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
         if no_course_codes and COURSE_CODE.search(text):
             errors.append(f"{who}含课程代码 {COURSE_CODE.search(text).group(0)}；简历内容不写课程代码，"
                           "删除它或改为项目性质描述（如 individual project / group project）")
+        if max_chars and len(text) > max_chars:
+            errors.append(f"{who}有 {len(text)} 个字符，超过上限 {max_chars}；请压缩")
         basis = item.get("basis") or []
         if not basis:
             errors.append(f"{who}缺少 basis 来源引用")
-        elif require_personal and not any(b.get("material_id") in own for b in basis):
-            errors.append(f"{who}只引用了 scope=team 的项目背景/团队成果章节；"
-                          "必须至少引用一处 scope=personal 的本人材料（我的贡献/我的工作/STAR/英文简历表述/自述/profile）")
+        valid, quote_errors = [], []
         for b in basis:
             mid, quote = b.get("material_id"), b.get("quote", "")
             if mid not in allowed_ids:
-                errors.append(f"{who}引用了不存在或本次不可用的 material_id {mid!r}")
-                continue
-            if not quote or not quote_in(quote, materials_by_id[mid]["text"]):
+                quote_errors.append(f"{who}引用了不存在或本次不可用的 material_id {mid!r}")
+            elif not quote or not quote_in(quote, materials_by_id[mid]["text"]):
                 hint = ""
                 if jd_text and quote and quote.lower() in jd_text.lower():
                     hint = "（这是 JD 的措辞，不是材料原文；quote 只能摘自 materials/profile/resume_draft）"
-                errors.append(f"{who}对 {mid} 的 quote 不是该材料的逐字连续原文："
-                              f"{quote[:60]!r}{hint}")
+                elif quote and looks_translated(quote, materials_by_id[mid]["text"]):
+                    hint = "（该材料是中文，quote 却是英文：不要翻译，直接复制材料里的中文原句；正文可以用英文写）"
+                quote_errors.append(f"{who}对 {mid} 的 quote 不是该材料的逐字连续原文："
+                                    f"{quote[:60]!r}{hint}")
+            else:
+                valid.append(b)
+        if prune_quotes and valid and quote_errors:
+            item["basis"] = basis = valid
+        else:
+            errors += quote_errors
+        if basis and require_personal and not any(b.get("material_id") in own for b in basis):
+            errors.append(f"{who}只引用了 scope=team 的项目背景/团队成果章节；"
+                          "必须至少引用一处 scope=personal 的本人材料（我的贡献/我的工作/STAR/英文简历表述/自述/profile）")
         for number in NUMBER.findall(text):
             if allow_jd_names and jd_name_number(number, text, jd_text):
                 continue
@@ -324,6 +349,8 @@ REVIEW_SCHEMA = {
                        "reason": {"type": "string"}}}}},
 }
 
+MAX_SUMMARY_CHARS = 450  # a resume line may hold 500; the summary is one line
+
 _CITED_TEXT = {"type": "object", "required": ["text", "basis"], "additionalProperties": False,
                "properties": {"text": {"type": "string", "minLength": 1},
                               "basis": BULLETS_SCHEMA["properties"]["bullets"]["items"]["properties"]["basis"]}}
@@ -395,7 +422,8 @@ class CVTailor:
 
     _CITE_RULES = ("只能使用 materials、profile 和 resume_draft 里的事实；gaps 里的要求不要声称具备，"
                    "可以坦诚说明愿意学习。给出 basis：material_id 必须是 materials/profile/resume_draft "
-                   "里的 id，quote 必须逐字摘自该材料的文本。JD 的措辞（jd_text、jd_requirements、gaps 里的话）"
+                   "里的 id，quote 必须逐字摘自该材料的文本，并保持材料原文的语言：材料是中文，quote 就复制中文原句，"
+                   "绝不要翻译成英文（正文用英文写，quote 不翻译）。每段 1-2 条 quote 即可。JD 的措辞（jd_text、jd_requirements、gaps 里的话）"
                    "可以在正文里呼应，但绝不能作为 quote；引用 JD 会被程序拒绝。")
 
     def _closing_request(self, task, note, schema, requirements, ordered_bullets, gap_list, jd_text):
@@ -432,12 +460,14 @@ class CVTailor:
     def summary(self, requirements, ordered_bullets, gap_list, jd_text):
         task = "cv_summary"
         payload, allowed = self._closing_request(
-            task, "写一段 2-3 句的英文简历摘要（summary），针对本岗位突出最相关的已核对经历。",
+            task, f"写一段 2-3 句、不超过 {MAX_SUMMARY_CHARS} 个字符的英文简历摘要（summary），"
+                  "针对本岗位突出最相关的已核对经历。",
             SUMMARY_SCHEMA, requirements, ordered_bullets, gap_list, jd_text)
         return self.llm.generate_json(
             task, SYSTEM_PROMPT, payload, SUMMARY_SCHEMA, self.timeout,
             validate=lambda d: validate_basis([d.get("summary", {})], self.by_id, allowed, label="summary ",
-                                              jd_text=jd_text, require_personal=True, no_course_codes=True))
+                                              jd_text=jd_text, require_personal=True, no_course_codes=True,
+                                              prune_quotes=True, max_chars=MAX_SUMMARY_CHARS))
 
     def cover_letter(self, requirements, ordered_bullets, gap_list, jd_text):
         task = "cv_cover_letter"
@@ -448,7 +478,7 @@ class CVTailor:
             task, SYSTEM_PROMPT, payload, COVER_LETTER_SCHEMA, self.timeout,
             validate=lambda d: validate_basis(d.get("cover_letter", []), self.by_id, allowed,
                                               label="cover_letter 第 {index} 段", jd_text=jd_text,
-                                              require_personal=True, no_course_codes=True))
+                                              require_personal=True, no_course_codes=True, prune_quotes=True))
 
 
 def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
@@ -498,6 +528,31 @@ def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
     except LLMError as exc:
         result["errors"].append({"step": "cover_letter", "error_type": exc.error_type, "message": str(exc)})
     result["warnings"] = tailor_obj.warnings
+    result["status"] = "complete" if not result["errors"] else "partial"
+    return result
+
+
+def redo_closing(llm, result, matches, jd_text, materials, by_project, resume_entry, timeout_seconds=None):
+    """Retry only what is missing at the end of an earlier result (the summary
+    and/or the cover letter), keeping its bullets, review and gaps."""
+    tailor_obj = CVTailor(llm, materials, by_project, resume_entry, timeout_seconds)
+    requirements = requirement_summary(matches)
+    result = {**result, "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+              "errors": [e for e in result.get("errors", []) if e["step"] not in ("summary", "cover_letter",
+                                                                                  "summary_letter")]}
+    if not result.get("summary"):
+        try:
+            data = tailor_obj.summary(requirements, result["projects"], result["gaps"], jd_text)
+            result["summary"] = _attach_sources(data["summary"], tailor_obj.by_id)
+        except LLMError as exc:
+            result["errors"].append({"step": "summary", "error_type": exc.error_type, "message": str(exc)})
+    if not result.get("cover_letter"):
+        try:
+            data = tailor_obj.cover_letter(requirements, result["projects"], result["gaps"], jd_text)
+            result["cover_letter"] = [_attach_sources(p, tailor_obj.by_id) for p in data["cover_letter"]]
+        except LLMError as exc:
+            result["errors"].append({"step": "cover_letter", "error_type": exc.error_type, "message": str(exc)})
+    result["warnings"] = list(dict.fromkeys(result.get("warnings", []) + tailor_obj.warnings))
     result["status"] = "complete" if not result["errors"] else "partial"
     return result
 
@@ -645,6 +700,8 @@ def main(argv=None):
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--data", type=Path, default=PROJECT_ROOT / "experiences")
     parser.add_argument("--json", action="store_true", help="stdout 只输出结果 JSON")
+    parser.add_argument("--letter-only", action="store_true",
+                        help="沿用最新一份 cv_suggestions 的要点，只重做缺失的 summary 和 Cover Letter")
     args = parser.parse_args(argv)
     try:
         meta, matches, jd_text = load_run(args.run)
@@ -657,8 +714,16 @@ def main(argv=None):
     materials, by_project, resume_entry = load_materials(args.data, resume_text)
     print(f"[tailor-cv] 材料 {len(materials)} 条，项目 {len(by_project)} 个，"
           f"要求 {len(matches)} 条；开始生成……", file=sys.stderr)
-    result = tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
-                    config.get("timeout_seconds"))
+    if args.letter_only:
+        previous = latest_output(args.run, "cv_suggestions", ".json")
+        if previous is None:
+            print(f"错误：{args.run} 里没有 cv_suggestions*.json；先完整运行一次", file=sys.stderr)
+            return 1
+        result = redo_closing(llm, json.loads(previous.read_text(encoding="utf-8")), matches, jd_text,
+                              materials, by_project, resume_entry, config.get("timeout_seconds"))
+    else:
+        result = tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
+                        config.get("timeout_seconds"))
     result["resume_path"] = str(args.resume)
     out_md = unique_output(args.run, "cv_suggestions")
     out_json = out_md.with_suffix(".json")
