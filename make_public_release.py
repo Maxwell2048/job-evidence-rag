@@ -14,7 +14,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 INCLUDE_FILES = [
-    "README.md", "README.zh-CN.md", "LICENSE", "requirements.txt", "config.local.example.json",
+    "README.md", "README.zh-CN.md", "CHANGELOG.md", "LICENSE", "requirements.txt", "requirements-test.txt",
+    ".github/workflows/tests.yml", "config.local.example.json",
     "project_template.md", "start.bat", "make_public_release.py",
     "add_jd.py", "build_resume.py", "build_site.py", "evidence_matcher.py", "export_docx.py",
     "import_uwa_kb.py", "interview_prep.py", "jd_parser.py", "job_identity.py", "job_summary.py", "local_llm.py",
