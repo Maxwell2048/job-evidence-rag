@@ -275,6 +275,24 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(tailor_cv.validate_basis(mixed, by_id, ["T1", "P1"], require_personal=True), [])
 
 
+class NumberSupportTests(unittest.TestCase):
+    def test_thousands_separator_is_the_only_tolerated_difference(self):
+        pool = "保存输出显示共有 1288 张图像；98,619 条记录；accuracy 0.5117。"
+        self.assertTrue(tailor_cv.number_supported("1288", pool))
+        self.assertTrue(tailor_cv.number_supported("1,288", pool))
+        self.assertTrue(tailor_cv.number_supported("98619", pool))
+        self.assertTrue(tailor_cv.number_supported("98,619", pool))
+        self.assertTrue(tailor_cv.number_supported("0.5117", pool))
+        self.assertFalse(tailor_cv.number_supported("1,289", pool))
+        self.assertFalse(tailor_cv.number_supported("51.17", pool))  # no unit conversion
+        self.assertFalse(tailor_cv.number_supported("12,88", pool))  # not a thousands group
+
+    def test_validate_basis_accepts_reformatted_thousands(self):
+        by_id = {"P1": {"text": "共有 1288 张 62×47 灰度图像", "scope": "personal"}}
+        item = [{"text": "Processed 1,288 grayscale images", "basis": [{"material_id": "P1", "quote": "1288 张"}]}]
+        self.assertEqual(tailor_cv.validate_basis(item, by_id, ["P1"]), [])
+
+
 class LooseQuoteTests(unittest.TestCase):
     def test_punctuation_case_and_spacing_are_ignored(self):
         text = "I took a proactive problem solving approach (see notes)."

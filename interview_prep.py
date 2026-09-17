@@ -20,8 +20,8 @@ from pathlib import Path
 
 from local_llm import LLMError, build_llm, load_config
 from tailor_cv import (IMPORTANCE_LABELS, KIND_LABELS, NUMBER, VERDICT_LABELS,
-                       latest_output, load_materials, load_run, personal_ids, unique_output,
-                       validate_basis)
+                       latest_output, load_materials, load_run, number_supported, personal_ids,
+                       unique_output, validate_basis)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 INTERVIEW_PROMPT_VERSION = "1"
@@ -155,7 +155,7 @@ def validate_answer(points, by_id, allowed, jd_text, label="第 {index} 个 poin
         if point.get("part") == "Honest" and not point.get("basis"):
             text = point.get("text", "")
             for number in NUMBER.findall(text):
-                if number not in pool:
+                if not number_supported(number, pool):
                     errors.append(f"{label.format(index=index)}（Honest）含材料中没有的数字 {number!r}")
             lowered = text.lower()
             for phrase in HONEST_FORBIDDEN:

@@ -231,10 +231,22 @@ def validate_basis(items, materials_by_id, allowed_ids, text_key="text",
                 errors.append(f"{who}对 {mid} 的 quote 不是该材料的逐字连续原文："
                               f"{quote[:60]!r}{hint}")
         for number in NUMBER.findall(text):
-            if number not in pool_text:
+            if not number_supported(number, pool_text):
                 errors.append(f"{who}包含材料中没有的数字 {number!r}；"
                               "不要新增或换算数字")
     return errors
+
+
+_THOUSANDS = re.compile(r"(?<=\d),(?=\d{3}\b)")
+
+
+def number_supported(number, pool_text):
+    """The number appears in the material, allowing only a difference in
+    thousands separators ('1,288' vs '1288'). No rounding or unit conversion."""
+    if number in pool_text:
+        return True
+    plain = _THOUSANDS.sub("", number)
+    return plain in _THOUSANDS.sub("", pool_text)
 
 
 def validate_quotes_in(items, text, key="quote"):

@@ -23,6 +23,9 @@ from tailor_cv import (RESUME_ID, KIND_LABELS, UNVERIFIED_KINDS, latest_output, 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BUILD_PROMPT_VERSION = "1"
 MAX_LINE_CHARS = 500
+# Page budget enforced by the program: models ignore 'keep it short' guidance.
+MAX_KEY_PROJECTS, MAX_KEY_BULLETS = 5, 4
+MAX_ADDITIONAL_PROJECTS, MAX_ADDITIONAL_BULLETS = 3, 2
 
 SYSTEM_PROMPT = """你把已经写好的素材组装成一份完整的英文简历，不是重新创作。
 素材：base_resume（现有简历底稿全文，material_id=RESUME）、profile（本人自述基本事实）、summary（已生成的摘要）、
@@ -36,7 +39,7 @@ tailored_projects（针对本岗位已生成并核对过来源的项目要点，
 5. 第一个 section 的第一行必须是底稿的第一行（姓名）原文；联系方式、学历、语言等信息来自底稿或 profile，逐字引用。
    summary 若提供，必须作为一个 section 出现，text 原样照抄并沿用其 basis。
 6. 同一项目不要重复出现：底稿中与 tailored_projects 同名的项目用 tailored 版本替换。
-7. 全文英文；整份简历控制在两页以内的篇幅（约 45 行以内）。
+7. 全文英文；整份简历控制在两页以内：KEY PROJECTS 最多 5 个项目、每个最多 4 条要点，ADDITIONAL/OTHER PROJECTS 最多 3 个项目、每个最多 2 条要点；按与岗位的相关度排序，最相关的放前面。超出的部分程序会按顺序裁掉。
 8. 任何一行都不出现课程代码（CITS5505、GENG5505 之类）；项目标题只保留名称与类型，底稿标题里的课程代码要去掉。
 9. 输出紧凑 JSON：不缩进、不换行、不加 Markdown 代码围栏，避免输出过长被截断。"""
 
@@ -153,6 +156,10 @@ def expand_refs(data, refs):
                     continue
                 line["text"] = refs[ref]["text"]
                 line["basis"] = [dict(b) for b in refs[ref]["basis"]]
+                # Filled in by the program from suggestions that tailor_cv already
+                # validated against the project's full material; the model cannot
+                # change it, so re-checking it here could only cause doomed retries.
+                line["_from_ref"] = ref
             elif not line.get("text") or not line.get("basis"):
                 errors.append(f"第 {s_index} 节第 {l_index} 行既没有 ref 也没有完整的 text+basis")
     return errors
@@ -164,14 +171,24 @@ def validate_document(data, by_id, allowed, jd_text, required=(), refs=None):
     for label, text, section_index in required:
         scope = sections[section_index - 1:section_index] if section_index else sections
         texts = [line.get("text", "").strip() for s in scope for line in s.get("lines", [])]
+        if text not in texts and section_index == 1 and sections \
+                and isinstance(sections[0].get("lines"), list):
+            # The name is a fixed fact from the base resume: insert it rather than
+            # spend one of three attempts asking the model to copy it.
+            sections[0]["lines"].insert(0, {"kind": "text", "text": text, "_from_ref": "NAME",
+                                            "basis": [{"material_id": RESUME_ID, "quote": text}]})
+            continue
         if text not in texts:
             where = f"第 {section_index} 节" if section_index else "任一节"
             errors.append(f"{where}缺少{label}：必须有一行 text 与之完全一致：{text[:80]!r}")
     for s_index, section in enumerate(sections, 1):
         lines = [l for l in section.get("lines", []) if isinstance(l, dict) and l.get("text")]
-        errors += validate_basis(lines, by_id, allowed,
-                                 label=f"第 {s_index} 节第 {{index}} 行", jd_text=jd_text,
-                                 no_course_codes=True)
+        for l_index, line in enumerate(lines, 1):
+            if line.get("_from_ref"):
+                continue  # program-filled and already validated upstream
+            errors += validate_basis([line], by_id, allowed,
+                                     label=f"第 {s_index} 节第 {l_index} 行", jd_text=jd_text,
+                                     no_course_codes=True)
         for l_index, line in enumerate(lines, 1):
             if len(line.get("text", "")) > MAX_LINE_CHARS:
                 errors.append(f"第 {s_index} 节第 {l_index} 行超过 {MAX_LINE_CHARS} 字符，请拆分或精简")
@@ -210,12 +227,59 @@ def build(llm, suggestions, materials, resume_entry, jd_text, timeout_seconds=No
                 basis.append({**b, "kind": m["kind"], "source": m["source"],
                               "section": m["section"], "line_start": m["line_start"],
                               "line_end": m["line_end"]})
-            lines.append({**line, "basis": basis})
+            clean = {k: v for k, v in line.items() if k != "_from_ref"}
+            lines.append({**clean, "basis": basis})
         sections.append({"title": section["title"], "lines": lines})
     return sections
 
 
-def render(sections, suggestions_path, resume_path, meta):
+def _project_limits(title):
+    key = title.strip().upper()
+    if "PROJECT" not in key and "EXPERIENCE" not in key:
+        return None
+    if "ADDITIONAL" in key or "OTHER" in key:
+        return MAX_ADDITIONAL_PROJECTS, MAX_ADDITIONAL_BULLETS
+    return MAX_KEY_PROJECTS, MAX_KEY_BULLETS
+
+
+def trim_projects(sections):
+    """Enforce the page budget in project sections, keeping the model's order.
+    Returns (trimmed sections, notes describing what was dropped)."""
+    notes, result = [], []
+    for section in sections:
+        limits = _project_limits(section["title"])
+        if limits is None:
+            result.append(section)
+            continue
+        max_projects, max_bullets = limits
+        kept, projects, bullets, dropping = [], 0, 0, False
+        dropped_projects, dropped_bullets = [], 0
+        for line in section["lines"]:
+            if line["kind"] == "heading":
+                projects += 1
+                bullets = 0
+                dropping = projects > max_projects
+                if dropping:
+                    dropped_projects.append(line["text"])
+                    continue
+            elif dropping:
+                continue
+            elif line["kind"] == "bullet":
+                bullets += 1
+                if bullets > max_bullets:
+                    dropped_bullets += 1
+                    continue
+            kept.append(line)
+        if dropped_projects:
+            notes.append(f"{section['title']}：超过 {max_projects} 个项目，已略去 "
+                         + "；".join(dropped_projects))
+        if dropped_bullets:
+            notes.append(f"{section['title']}：每个项目最多 {max_bullets} 条要点，已略去 {dropped_bullets} 条")
+        result.append({**section, "lines": kept})
+    return result, notes
+
+
+def render(sections, suggestions_path, resume_path, meta, notes=()):
     body, appendix = [], []
     unverified = 0
     for s_index, section in enumerate(sections, 1):
@@ -248,6 +312,7 @@ def render(sections, suggestions_path, resume_path, meta):
                     f"生成时间 {datetime.datetime.now().isoformat(timespec='seconds')}",
                     f"- 依据未核对材料（简历底稿、待核对经历）的引用共 {unverified} 处，其余来自已核对经历或自述事实。",
                     "- 编号为 节.行；每行的改写是否忠于引用，请逐条核对，尤其是形容词与程度副词。",
+                    *[f"- 篇幅裁剪：{note}" for note in notes],
                     ""] + appendix
     return "\n".join(lines) + "\n"
 
@@ -281,7 +346,9 @@ def main(argv=None):
         print(f"错误：{exc}", file=sys.stderr)
         return 1
     out_md = unique_output(args.run, "resume_tailored")
-    out_md.write_text(render(sections, suggestions_path, args.resume, meta), encoding="utf-8")
+    sections, trim_notes = trim_projects(sections)
+    out_md.write_text(render(sections, suggestions_path, args.resume, meta, trim_notes),
+                      encoding="utf-8")
     out_md.with_suffix(".json").write_text(json.dumps(
         {"prompt_version": BUILD_PROMPT_VERSION, "run_id": meta["run_id"],
          "suggestions": str(suggestions_path), "resume_path": str(args.resume),
