@@ -25,6 +25,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
+from job_identity import load_identity
 from tailor_cv import latest_output, output_number
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -439,32 +440,48 @@ LEGACY_DOCX = {"resume": "resume_tailored", "cover_letter": "cover_letter"}
 
 
 def _file_part(text, limit):
-    """Letters, digits and hyphens only, so the name is safe on any file system."""
-    cleaned = re.sub(r"[^\w\-]+", "-", text, flags=re.UNICODE).replace("_", "-")
-    return re.sub(r"-{2,}", "-", cleaned).strip("-")[:limit].rstrip("-")
+    """English letters, digits and hyphens only: such a name survives email
+    attachments, upload forms and applicant tracking systems unchanged."""
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "-", text or "")
+    return cleaned.strip("-")[:limit].rstrip("-")
 
 
-def run_label(run_dir):
-    """What tells one run's files from another's: the JD name (the name typed
-    on the page, else the first words of the JD) and when the run started."""
+_LEGAL_SUFFIX = re.compile(r"[\s,]+(?:Pty\.?\s+Ltd\.?|Limited|Ltd\.?|Inc\.?|LLC|Corporation|Corp\.?)\s*$",
+                           re.IGNORECASE)
+
+
+def _run_time(run_dir):
+    stamp = re.match(r"\d{4}(\d{4})-(\d{4})", Path(run_dir).name)
+    return f"{stamp.group(1)}-{stamp.group(2)}" if stamp else _file_part(Path(run_dir).name, 20)
+
+
+def run_label(run_dir, label=None):
+    """What tells one application's files from another's, company first:
+    a label given by the user, else the company and job title found in the JD
+    (job_identity.json), else the English part of the JD file name; always
+    followed by when the run started."""
     run_dir = Path(run_dir)
-    jd_stem = ""
-    try:
-        meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
-        jd_stem = Path(str(meta.get("input", {}).get("jd_path", "")).replace("\\", "/")).stem
-    except (OSError, ValueError):
-        pass
-    jd_part = _file_part(re.sub(r"^\d{8}-\d{4}-", "", jd_stem), 40)
-    stamp = re.match(r"\d{4}(\d{4})-(\d{4})", run_dir.name)
-    when = f"{stamp.group(1)}-{stamp.group(2)}" if stamp else _file_part(run_dir.name, 20)
-    return "_".join(part for part in (jd_part, when) if part)
+    who = _file_part(label, 40)
+    if not who:
+        identity = load_identity(run_dir)
+        company = _LEGAL_SUFFIX.sub("", identity.get("company") or "")
+        who = "_".join(part for part in (_file_part(company, 30),
+                                         _file_part(identity.get("job_title"), 30)) if part)
+    if not who:
+        try:
+            meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
+            jd_stem = Path(str(meta.get("input", {}).get("jd_path", "")).replace("\\", "/")).stem
+        except (OSError, ValueError):
+            jd_stem = ""
+        who = _file_part(re.sub(r"^\d{8}-\d{4}-", "", jd_stem), 40)
+    return "_".join(part for part in (who, _run_time(run_dir)) if part)
 
 
-def docx_name(kind, person, run_dir, number=1):
-    """e.g. Alex_Sample_Resume_acme-service-desk_0917-1459.docx (-2 for a re-export
-    of a second resume version in the same run)."""
-    who = "_".join(word.capitalize() for word in _file_part(person or "", 40).split("-") if word)
-    parts = [part for part in (who, DOCX_KINDS[kind], run_label(run_dir)) if part]
+def docx_name(kind, person, run_dir, number=1, label=None):
+    """e.g. Alex_Sample_Resume_Acme-Energy_Data-Engineer_0917-1459.docx (-2 for a
+    re-export of a second resume version in the same run)."""
+    who = "_".join(word.capitalize() for word in _file_part(person, 40).split("-") if word)
+    parts = [part for part in (who, DOCX_KINDS[kind], run_label(run_dir, label)) if part]
     return "_".join(parts) + (f"-{number}" if number > 1 else "") + ".docx"
 
 
@@ -476,7 +493,7 @@ def latest_docx(run_dir, kind):
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
-def export_run(run_dir, with_letter=False, resume_md=None):
+def export_run(run_dir, with_letter=False, resume_md=None, label=None):
     run_dir = Path(run_dir)
     md_path = Path(resume_md) if resume_md else latest_output(run_dir, "resume_tailored")
     if md_path is None:
@@ -484,12 +501,12 @@ def export_run(run_dir, with_letter=False, resume_md=None):
     lines = resume_body(md_path.read_text(encoding="utf-8"))
     name_line = next((l[2:].strip() for l in lines if l.startswith("# ")), None)
     number = output_number(md_path, "resume_tailored")
-    outputs = {"resume": markdown_to_docx(lines, run_dir / docx_name("resume", name_line, run_dir, number))}
+    outputs = {"resume": markdown_to_docx(lines, run_dir / docx_name("resume", name_line, run_dir, number, label))}
     if with_letter:
         suggestions_path = latest_output(run_dir, "cv_suggestions", ".json")
         if suggestions_path is not None:
             suggestions = json.loads(suggestions_path.read_text(encoding="utf-8"))
-            letter = cover_letter_to_docx(suggestions, run_dir / docx_name("cover_letter", name_line, run_dir),
+            letter = cover_letter_to_docx(suggestions, run_dir / docx_name("cover_letter", name_line, run_dir, label=label),
                                           name_line)
             if letter is not None:
                 outputs["cover_letter"] = letter
@@ -501,9 +518,11 @@ def main(argv=None):
     parser.add_argument("--run", required=True, type=Path)
     parser.add_argument("--md", type=Path, default=None, help="指定 resume_tailored*.md，默认最新")
     parser.add_argument("--letter", action="store_true", help="同时导出 Cover Letter")
+    parser.add_argument("--label", default=None,
+                        help="文件名里的公司/岗位标识（英文）；默认取 job_identity.json 里的公司与职位")
     args = parser.parse_args(argv)
     try:
-        outputs = export_run(args.run, args.letter, args.md)
+        outputs = export_run(args.run, args.letter, args.md, args.label)
     except (OSError, ValueError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1

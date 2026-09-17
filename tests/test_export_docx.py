@@ -174,23 +174,36 @@ B.Eng. Food Science (2020.09 – 2024.06)
             self.assertEqual(letter_texts[0], "ALEX SAMPLE")
             self.assertIn("I am writing about the role.", letter_texts)
 
-    def test_file_names_tell_runs_apart(self):
+    def test_file_names_are_english_and_lead_with_the_company(self):
         with tempfile.TemporaryDirectory() as tmp:
-            first = Path(tmp) / "20260917-145916-63174a"
-            second = Path(tmp) / "20260918-091500-0a1b2c"
-            for run, jd in ((first, "20260917-1459-acme-service-desk.txt"), (second, "20260918-0915-关于 这个岗位.txt")):
-                run.mkdir()
-                (run / "run_meta.json").write_text(json.dumps({"input": {"jd_path": "jobs/" + jd}}), encoding="utf-8")
-            self.assertEqual(export_docx.docx_name("resume", "ALEX SAMPLE", first),
-                             "Alex_Sample_Resume_acme-service-desk_0917-1459.docx")
-            self.assertEqual(export_docx.docx_name("cover_letter", "ALEX SAMPLE", second, 2),
-                             "Alex_Sample_Cover_Letter_关于-这个岗位_0918-0915-2.docx")
-            bare = Path(tmp) / "20260919-101010-ffffff"  # no metadata: the time alone still separates runs
+            run = Path(tmp) / "20260917-145916-63174a"
+            run.mkdir()
+            (run / "run_meta.json").write_text(json.dumps({"input": {
+                "jd_path": "jobs/20260917-1459-highlights-重点内容.txt"}}), encoding="utf-8")
+            # no identity yet: only the English part of the JD name is used
+            self.assertEqual(export_docx.docx_name("resume", "ALEX SAMPLE", run),
+                             "Alex_Sample_Resume_highlights_0917-1459.docx")
+            (run / "job_identity.json").write_text(json.dumps({
+                "company": "Acme Energy Pty Ltd", "job_title": "Graduate AI Engineer（人工智能）"}), encoding="utf-8")
+            name = export_docx.docx_name("resume", "ALEX SAMPLE", run)
+            self.assertEqual(name, "Alex_Sample_Resume_Acme-Energy_Graduate-AI-Engineer_0917-1459.docx")
+            self.assertTrue(name.isascii())
+            self.assertEqual(export_docx.docx_name("cover_letter", "ALEX SAMPLE", run, 2),
+                             "Alex_Sample_Cover_Letter_Acme-Energy_Graduate-AI-Engineer_0917-1459-2.docx")
+            # a label typed by the user wins; a label with no English letters falls back to the identity
+            self.assertEqual(export_docx.docx_name("resume", "ALEX SAMPLE", run, label="Acme grad role"),
+                             "Alex_Sample_Resume_Acme-grad-role_0917-1459.docx")
+            self.assertIn("Acme-Energy", export_docx.docx_name("resume", "ALEX SAMPLE", run, label="某公司"))
+            (run / "job_identity.json").write_text(json.dumps({"company": None, "job_title": "Data Analyst"}),
+                                                   encoding="utf-8")
+            self.assertEqual(export_docx.docx_name("resume", "ALEX SAMPLE", run),
+                             "Alex_Sample_Resume_Data-Analyst_0917-1459.docx")
+            bare = Path(tmp) / "20260919-101010-ffffff"  # nothing known: the time alone still separates runs
             bare.mkdir()
             self.assertEqual(export_docx.docx_name("resume", None, bare), "Resume_0919-1010.docx")
-            (first / "resume_tailored.docx").write_bytes(b"PK")  # exported before the naming change
-            self.assertEqual(export_docx.latest_docx(first, "resume").name, "resume_tailored.docx")
-            self.assertIsNone(export_docx.latest_docx(first, "cover_letter"))
+            (run / "resume_tailored.docx").write_bytes(b"PK")  # exported before the naming change
+            self.assertEqual(export_docx.latest_docx(run, "resume").name, "resume_tailored.docx")
+            self.assertIsNone(export_docx.latest_docx(run, "cover_letter"))
 
     def test_other_projects_flow_in_short_rows(self):
         blocks = [{"heading": f"Project {i}", "lines": [{"kind": "bullet", "text": "Did a thing."}]} for i in range(3)]

@@ -270,8 +270,13 @@ class Pipeline:
             self._step(job, "build", build)
 
             def docx():
-                _, stdout, _ = self._cli("export_docx.py", "--run", str(job.run_dir), "--letter", job=job)
-                return f"{stdout.count('已写入')} 个文件"
+                # Company and job title for the file names; a failure only means plainer names.
+                code, identity, _ = self._cli("job_identity.py", "--run", str(job.run_dir), "--config",
+                                              str(self.config_path), ok_codes=(0, 1), job=job)
+                label = ["--label", job.jd_name] if job.jd_name else []
+                _, stdout, _ = self._cli("export_docx.py", "--run", str(job.run_dir), "--letter", *label, job=job)
+                named = identity.strip().splitlines()[-1] if code == 0 and identity.strip() else "未识别出公司"
+                return f"{stdout.count('已写入')} 个文件 · {named}"
             self._step(job, "docx", docx)
 
             if job.with_interview:

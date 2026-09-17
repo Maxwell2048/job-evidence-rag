@@ -17,8 +17,9 @@ import sys
 from pathlib import Path
 
 from local_llm import LLMError, build_llm, load_config
-from tailor_cv import (RESUME_ID, KIND_LABELS, UNVERIFIED_KINDS, latest_output, load_materials,
-                       load_run, read_resume, validate_basis, unique_output)
+from tailor_cv import (RESUME_ID, KIND_LABELS, UNVERIFIED_KINDS, CVTailor, _attach_sources, latest_output,
+                       load_materials, load_run, read_resume, requirement_summary, validate_basis,
+                       unique_output)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 BUILD_PROMPT_VERSION = "1"
@@ -195,6 +196,22 @@ def validate_document(data, by_id, allowed, jd_text, required=(), refs=None):
     return errors
 
 
+def ensure_summary(llm, suggestions, matches, jd_text, materials, by_project, resume_entry,
+                   timeout_seconds=None):
+    """A resume needs its SUMMARY. When tailor_cv could not produce one, try
+    once more here, on its own. Returns a note for the appendix, or None."""
+    if suggestions.get("summary"):
+        return None
+    tailor = CVTailor(llm, materials, by_project, resume_entry, timeout_seconds)
+    try:
+        data = tailor.summary(requirement_summary(matches), suggestions.get("projects", []),
+                              suggestions.get("gaps", []), jd_text)
+    except LLMError as exc:
+        return f"SUMMARY 未生成：定制建议里没有摘要，组装时补生成也失败（{str(exc)[:120]}）；请手动补写"
+    suggestions["summary"] = _attach_sources(data["summary"], tailor.by_id)
+    return "SUMMARY 是组装时补生成的（定制建议那一步没有产出摘要）"
+
+
 def build(llm, suggestions, materials, resume_entry, jd_text, timeout_seconds=None):
     by_id = {m["material_id"]: m for m in materials}
     allowed = allowed_material_ids(suggestions, materials)
@@ -271,10 +288,11 @@ def trim_projects(sections):
                     continue
             kept.append(line)
         if dropped_projects:
-            notes.append(f"{section['title']}：超过 {max_projects} 个项目，已略去 "
+            notes.append(f"篇幅裁剪：{section['title']}：超过 {max_projects} 个项目，已略去 "
                          + "；".join(dropped_projects))
         if dropped_bullets:
-            notes.append(f"{section['title']}：每个项目最多 {max_bullets} 条要点，已略去 {dropped_bullets} 条")
+            notes.append(f"篇幅裁剪：{section['title']}：每个项目最多 {max_bullets} 条要点，"
+                         f"已略去 {dropped_bullets} 条")
         result.append({**section, "lines": kept})
     return result, notes
 
@@ -312,7 +330,7 @@ def render(sections, suggestions_path, resume_path, meta, notes=()):
                     f"生成时间 {datetime.datetime.now().isoformat(timespec='seconds')}",
                     f"- 依据未核对材料（简历底稿、待核对经历）的引用共 {unverified} 处，其余来自已核对经历或自述事实。",
                     "- 编号为 节.行；每行的改写是否忠于引用，请逐条核对，尤其是形容词与程度副词。",
-                    *[f"- 篇幅裁剪：{note}" for note in notes],
+                    *[f"- {note}" for note in notes],
                     ""] + appendix
     return "\n".join(lines) + "\n"
 
@@ -327,7 +345,7 @@ def main(argv=None):
     parser.add_argument("--data", type=Path, default=PROJECT_ROOT / "experiences")
     args = parser.parse_args(argv)
     try:
-        meta, _matches, jd_text = load_run(args.run)
+        meta, matches, jd_text = load_run(args.run)
         suggestions_path = args.suggestions or latest_suggestions(args.run)
         suggestions = json.loads(Path(suggestions_path).read_text(encoding="utf-8"))
         resume_text = read_resume(args.resume)
@@ -336,9 +354,13 @@ def main(argv=None):
     except (OSError, ValueError, LLMError, KeyError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
-    materials, _by_project, resume_entry = load_materials(args.data, resume_text)
+    materials, by_project, resume_entry = load_materials(args.data, resume_text)
     print(f"[build-resume] 使用 {Path(suggestions_path).name}，材料 {len(materials)} 条；组装中……",
           file=sys.stderr)
+    summary_note = ensure_summary(llm, suggestions, matches, jd_text, materials, by_project, resume_entry,
+                                  config.get("timeout_seconds"))
+    if summary_note:
+        print(f"[build-resume] {summary_note}", file=sys.stderr)
     try:
         sections = build(llm, suggestions, materials, resume_entry, jd_text,
                          config.get("timeout_seconds"))
@@ -347,6 +369,8 @@ def main(argv=None):
         return 1
     out_md = unique_output(args.run, "resume_tailored")
     sections, trim_notes = trim_projects(sections)
+    if summary_note:
+        trim_notes = [summary_note, *trim_notes]
     out_md.write_text(render(sections, suggestions_path, args.resume, meta, trim_notes),
                       encoding="utf-8")
     out_md.with_suffix(".json").write_text(json.dumps(

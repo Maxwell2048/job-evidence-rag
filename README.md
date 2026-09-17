@@ -146,6 +146,7 @@ $runDir = 'outputs\YOUR_RUN_DIRECTORY'
 .\.venv\Scripts\python.exe build_resume.py --run $runDir --resume resume\base_resume.docx --config config.local.json
 
 # Export Word documents and prepare interviews
+.\.venv\Scripts\python.exe job_identity.py --run $runDir --config config.local.json   # company and job title for file names
 .\.venv\Scripts\python.exe export_docx.py --run $runDir --letter
 .\.venv\Scripts\python.exe interview_prep.py --run $runDir --config config.local.json
 
@@ -171,7 +172,8 @@ Matching creates `outputs/<timestamp>-<suffix>/`:
 | `run_meta.json` | Run status, input hashes, model settings, errors |
 | `cv_suggestions.*` | Optional CV suggestions and cover-letter drafts |
 | `resume_tailored.*` | Optional assembled resume (Markdown and JSON) |
-| `<Name>_Resume_<jd>_<MMDD-HHMM>.docx`, `<Name>_Cover_Letter_…docx` | Optional Word exports, named per run so files from different applications cannot be confused |
+| `job_identity.json` | Optional: hiring company and job title, each checked to be wording of the JD |
+| `<Name>_Resume_<Company>_<Job-Title>_<MMDD-HHMM>.docx`, `<Name>_Cover_Letter_…docx` | Optional Word exports with English-only names that lead with the company, so files for different applications cannot be confused; `--label` overrides the company part |
 | `interview_prep.*` | Optional interview preparation |
 
 Extraction-only runs produce the extraction subset. Later generation may add numbered versions. Regenerating a summary updates `report.md` and `job_summary.json`; Word export can replace the DOCX associated with its selected Markdown input.
@@ -186,6 +188,7 @@ jd_parser.py            JD extraction and source locations
 local_llm.py            Model adapter, schema validation, bounded retries
 evidence_matcher.py      Evidence judgment and quotation checks
 match_job.py            Matching workflow
+job_identity.py         Hiring company and job title, for export file names
 job_summary.py          Strengths, gaps, preparation advice
 report_writer.py        Matching reports
 tailor_cv.py             Application drafting

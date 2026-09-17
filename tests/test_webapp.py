@@ -66,7 +66,10 @@ class FakeRunner:
         if script == "build_resume.py":
             (run / "resume_tailored.md").write_text("# ALEX SAMPLE\n", encoding="utf-8")
             return 0, "已写入", ""
+        if script == "job_identity.py":
+            return 0, "公司：Acme；职位：Data Engineer\n", ""
         if script == "export_docx.py":
+            self.export_args = args
             (run / DOCX).write_bytes(b"PK")
             return 0, "已写入（resume）：x\n已写入（cover_letter）：y\n", ""
         if script == "interview_prep.py":
@@ -103,9 +106,10 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(job.status, "done", job.error)
             self.assertEqual([s["status"] for s in job.stages], ["done"] * 6)
             self.assertIn("partial", job.stage("tailor")["message"])
-            self.assertEqual(job.stage("docx")["message"], "2 个文件")
-            self.assertEqual(runner.calls, ["match_job.py", "tailor_cv.py", "build_resume.py",
+            self.assertEqual(job.stage("docx")["message"], "2 个文件 · 公司：Acme；职位：Data Engineer")
+            self.assertEqual(runner.calls, ["match_job.py", "tailor_cv.py", "build_resume.py", "job_identity.py",
                                             "export_docx.py", "interview_prep.py"])
+            self.assertEqual(runner.export_args[-2:], ["--label", "acme"])  # a typed name goes into the file names
             self.assertTrue(list((Path(tmp) / "jobs").glob("*-acme.txt")))
             docs, downloads = webapp.run_documents(job.run_dir)
             self.assertEqual([d["stem"] for d in docs], ["report", "cv_suggestions", "resume_tailored", "interview_prep"])

@@ -17,7 +17,7 @@ INCLUDE_FILES = [
     "README.md", "README.zh-CN.md", "LICENSE", "requirements.txt", "config.local.example.json",
     "project_template.md", "start.bat", "make_public_release.py",
     "add_jd.py", "build_resume.py", "build_site.py", "evidence_matcher.py", "export_docx.py",
-    "import_uwa_kb.py", "interview_prep.py", "jd_parser.py", "job_summary.py", "local_llm.py",
+    "import_uwa_kb.py", "interview_prep.py", "jd_parser.py", "job_identity.py", "job_summary.py", "local_llm.py",
     "location_gate.py", "match_job.py", "report_writer.py", "search_experience.py", "tailor_cv.py", "webapp.py",
     "docs/jd_matcher_spec.md",
     "examples/experiences/demo_project.md", "examples/junior_developer_jd.txt",
@@ -29,7 +29,7 @@ INCLUDE_FILES = [
 INCLUDE_TESTS = [
     "test_add_jd.py", "test_build_resume.py", "test_build_site.py", "test_evidence_matcher.py",
     "test_export_docx.py", "test_import_uwa_kb.py", "test_interview_prep.py", "test_jd_parser.py",
-    "test_job_summary.py", "test_local_llm.py", "test_match_job.py", "test_report_writer.py",
+    "test_job_identity.py", "test_job_summary.py", "test_local_llm.py", "test_match_job.py", "test_report_writer.py",
     "test_retriever.py", "test_sources.py", "test_tailor_cv.py", "test_webapp.py",
     "test_public_release.py", "test_public_eval.py", "test_location_gate.py",
     "test_quote_tolerance.py",

@@ -192,8 +192,8 @@ class EndToEndTests(unittest.TestCase):
         responses = [
             bad, {"bullets": [good_bullet], "note": "ok"},
             {"items": [{"quote": "trained YOLO11n on 10 classes", "action": "keep", "reason": "相关"}]},
-            {"summary": {"text": "IT graduate.", "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]},
-             "cover_letter": [{"text": "Dear team, I annotated 12 sample maps.",
+            {"summary": {"text": "IT graduate.", "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}},
+            {"cover_letter": [{"text": "Dear team, I annotated 12 sample maps.",
                                "basis": [{"material_id": "M004", "quote": "Annotated 12 sample maps"}]}]},
         ]
         result, md, llm, materials = self.run_tailor(responses)
@@ -212,11 +212,15 @@ class EndToEndTests(unittest.TestCase):
     def test_step_failure_is_partial_not_fatal(self):
         responses = [LLMError("boom", error_type="timeout"),
                      {"items": []},
+                     {"summary": {"text": "IT graduate.", "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}},
                      LLMError("boom2", error_type="timeout")]
-        result, md, _, _ = self.run_tailor(responses)
+        result, md, llm, _ = self.run_tailor(responses)
         self.assertEqual(result["status"], "partial")
         self.assertEqual([e["step"] for e in result["errors"]],
-                         ["bullets:Synthetic Project", "summary_letter"])
+                         ["bullets:Synthetic Project", "cover_letter"])
+        # a failed cover letter no longer takes the summary down with it
+        self.assertEqual(result["summary"]["text"], "IT graduate.")
+        self.assertEqual([c[0] for c in llm.calls][-2:], ["cv_summary", "cv_cover_letter"])
         self.assertIn("## 失败步骤", md)
         self.assertIn("（未生成）", md)
 

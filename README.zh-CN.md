@@ -146,6 +146,7 @@ $runDir = 'outputs\YOUR_RUN_DIRECTORY'
 .\.venv\Scripts\python.exe build_resume.py --run $runDir --resume resume\base_resume.docx --config config.local.json
 
 # 导出 Word 文档并准备面试
+.\.venv\Scripts\python.exe job_identity.py --run $runDir --config config.local.json   # 识别公司与职位，用于文件名
 .\.venv\Scripts\python.exe export_docx.py --run $runDir --letter
 .\.venv\Scripts\python.exe interview_prep.py --run $runDir --config config.local.json
 
@@ -171,7 +172,8 @@ $runDir = 'outputs\YOUR_RUN_DIRECTORY'
 | `run_meta.json` | 运行状态、输入哈希、模型设置、错误 |
 | `cv_suggestions.*` | 可选：CV 建议与 Cover Letter 草稿 |
 | `resume_tailored.*` | 可选：组装好的简历（Markdown 与 JSON） |
-| `<姓名>_Resume_<jd>_<月日-时分>.docx`、`<姓名>_Cover_Letter_…docx` | 可选：Word 导出，文件名按运行区分，多次投递的文件不会混淆 |
+| `job_identity.json` | 可选：招聘公司与职位名称，程序校验二者都是 JD 原文里的文字 |
+| `<姓名>_Resume_<公司>_<职位>_<月日-时分>.docx`、`<姓名>_Cover_Letter_…docx` | 可选：Word 导出，文件名全英文、公司在前，多次投递的文件不会混淆；`--label` 可手动指定公司部分 |
 | `interview_prep.*` | 可选：面试准备 |
 
 只做提取的运行只产生提取相关的子集。后续生成可能追加带编号的版本。重新生成总结会更新 `report.md` 和 `job_summary.json`；Word 导出会替换与所选 Markdown 对应的 DOCX。
@@ -186,6 +188,7 @@ jd_parser.py            JD 提取与原文定位
 local_llm.py            模型适配层、schema 校验、有限次重试
 evidence_matcher.py      证据判断与引用校验
 match_job.py            匹配流程
+job_identity.py         招聘公司与职位名称，用于导出文件命名
 job_summary.py          优势、缺口、准备建议
 report_writer.py        匹配报告
 tailor_cv.py             申请材料起草

@@ -324,22 +324,15 @@ REVIEW_SCHEMA = {
                        "reason": {"type": "string"}}}}},
 }
 
-LETTER_SCHEMA = {
-    "type": "object",
-    "required": ["summary", "cover_letter"],
-    "additionalProperties": False,
-    "properties": {
-        "summary": {"type": "object", "required": ["text", "basis"],
-                    "additionalProperties": False,
-                    "properties": {"text": {"type": "string", "minLength": 1},
-                                   "basis": BULLETS_SCHEMA["properties"]["bullets"]["items"]["properties"]["basis"]}},
-        "cover_letter": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
-            "type": "object", "required": ["text", "basis"],
-            "additionalProperties": False,
-            "properties": {"text": {"type": "string", "minLength": 1},
-                           "basis": BULLETS_SCHEMA["properties"]["bullets"]["items"]["properties"]["basis"]}}},
-    },
-}
+_CITED_TEXT = {"type": "object", "required": ["text", "basis"], "additionalProperties": False,
+               "properties": {"text": {"type": "string", "minLength": 1},
+                              "basis": BULLETS_SCHEMA["properties"]["bullets"]["items"]["properties"]["basis"]}}
+# Two requests, not one: a rejected cover-letter quote must not cost the resume its summary.
+SUMMARY_SCHEMA = {"type": "object", "required": ["summary"], "additionalProperties": False,
+                  "properties": {"summary": _CITED_TEXT}}
+COVER_LETTER_SCHEMA = {"type": "object", "required": ["cover_letter"], "additionalProperties": False,
+                       "properties": {"cover_letter": {"type": "array", "minItems": 1, "maxItems": 5,
+                                                       "items": _CITED_TEXT}}}
 
 
 # ---------------------------------------------------------------- generation
@@ -400,18 +393,20 @@ class CVTailor:
             "cv_review", SYSTEM_PROMPT, payload, REVIEW_SCHEMA, self.timeout,
             validate=lambda d: validate_quotes_in(d.get("items", []), self.resume["text"]))
 
-    def summary_and_letter(self, requirements, ordered_bullets, gap_list, jd_text):
+    _CITE_RULES = ("只能使用 materials、profile 和 resume_draft 里的事实；gaps 里的要求不要声称具备，"
+                   "可以坦诚说明愿意学习。给出 basis：material_id 必须是 materials/profile/resume_draft "
+                   "里的 id，quote 必须逐字摘自该材料的文本。JD 的措辞（jd_text、jd_requirements、gaps 里的话）"
+                   "可以在正文里呼应，但绝不能作为 quote；引用 JD 会被程序拒绝。")
+
+    def _closing_request(self, task, note, schema, requirements, ordered_bullets, gap_list, jd_text):
+        """Payload and allowed material ids shared by the summary and the cover letter."""
         profile_entries = [e for e in self.materials if e["kind"] == "profile"]
         allowed = [e["material_id"] for e in profile_entries] + [RESUME_ID] + [
             b["material_id"] for p in ordered_bullets for bl in p["bullets"] for b in bl["basis"]]
         allowed = list(dict.fromkeys(allowed))
         cited = [self.by_id[i] for i in allowed if i != RESUME_ID and self.by_id[i]["kind"] != "profile"]
         payload = {
-            "task_note": "写一段 2-3 句的英文简历摘要（summary）和一封 3-4 段的英文 Cover Letter（cover_letter）。"
-                         "只能使用 materials、profile 和 resume_draft 里的事实；gaps 里的要求不要声称具备，"
-                         "可以坦诚说明愿意学习。每段给出 basis：material_id 必须是 materials/profile/resume_draft "
-                         "里的 id，quote 必须逐字摘自该材料的文本。JD 的措辞（jd_text、jd_requirements、gaps 里的话）"
-                         "可以在正文里呼应，但绝不能作为 quote；引用 JD 会被程序拒绝。",
+            "task_note": note + self._CITE_RULES,
             "jd_text": jd_text,
             "jd_requirements": [{k: r[k] for k in ("requirement_id", "text", "importance", "verdict")}
                                 for r in requirements],
@@ -423,24 +418,37 @@ class CVTailor:
             "profile": self._visible(profile_entries),
             "resume_draft": {"material_id": RESUME_ID, "text": self.resume["text"]},
         }
-        task = "cv_summary_letter"
-        if not self._fits(task, payload, LETTER_SCHEMA):
+        if not self._fits(task, payload, schema):
             payload["materials"] = []
-            self.warnings.append("摘要/Cover Letter 请求超出预算，未附带项目材料全文，仅提供已生成要点")
+            warning = "摘要/Cover Letter 请求超出预算，未附带项目材料全文，仅提供已生成要点"
+            if warning not in self.warnings:
+                self.warnings.append(warning)
             allowed = [i for i in allowed if i == RESUME_ID or self.by_id[i]["kind"] == "profile"]
-            if not self._fits(task, payload, LETTER_SCHEMA):
+            if not self._fits(task, payload, schema):
                 raise LLMError("摘要/Cover Letter 请求超出提示词预算，请调大 context_budget",
                                error_type="context_budget")
+        return payload, allowed
 
-        def validate(d):
-            return (validate_basis([d.get("summary", {})], self.by_id, allowed,
-                                   label="summary ", jd_text=jd_text, require_personal=True,
-                                   no_course_codes=True)
-                    + validate_basis(d.get("cover_letter", []), self.by_id, allowed,
-                                     label="cover_letter 第 {index} 段", jd_text=jd_text,
-                                     require_personal=True, no_course_codes=True))
-        return self.llm.generate_json(task, SYSTEM_PROMPT, payload, LETTER_SCHEMA,
-                                      self.timeout, validate=validate)
+    def summary(self, requirements, ordered_bullets, gap_list, jd_text):
+        task = "cv_summary"
+        payload, allowed = self._closing_request(
+            task, "写一段 2-3 句的英文简历摘要（summary），针对本岗位突出最相关的已核对经历。",
+            SUMMARY_SCHEMA, requirements, ordered_bullets, gap_list, jd_text)
+        return self.llm.generate_json(
+            task, SYSTEM_PROMPT, payload, SUMMARY_SCHEMA, self.timeout,
+            validate=lambda d: validate_basis([d.get("summary", {})], self.by_id, allowed, label="summary ",
+                                              jd_text=jd_text, require_personal=True, no_course_codes=True))
+
+    def cover_letter(self, requirements, ordered_bullets, gap_list, jd_text):
+        task = "cv_cover_letter"
+        payload, allowed = self._closing_request(
+            task, "写一封 3-4 段的英文 Cover Letter（cover_letter），每段给出 basis。",
+            COVER_LETTER_SCHEMA, requirements, ordered_bullets, gap_list, jd_text)
+        return self.llm.generate_json(
+            task, SYSTEM_PROMPT, payload, COVER_LETTER_SCHEMA, self.timeout,
+            validate=lambda d: validate_basis(d.get("cover_letter", []), self.by_id, allowed,
+                                              label="cover_letter 第 {index} 段", jd_text=jd_text,
+                                              require_personal=True, no_course_codes=True))
 
 
 def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
@@ -480,13 +488,15 @@ def tailor(llm, meta, matches, jd_text, materials, by_project, resume_entry,
         result["errors"].append({"step": "resume_review", "error_type": exc.error_type,
                                  "message": str(exc)})
     try:
-        data = tailor_obj.summary_and_letter(requirements, result["projects"],
-                                             result["gaps"], jd_text)
+        data = tailor_obj.summary(requirements, result["projects"], result["gaps"], jd_text)
         result["summary"] = _attach_sources(data["summary"], tailor_obj.by_id)
+    except LLMError as exc:
+        result["errors"].append({"step": "summary", "error_type": exc.error_type, "message": str(exc)})
+    try:
+        data = tailor_obj.cover_letter(requirements, result["projects"], result["gaps"], jd_text)
         result["cover_letter"] = [_attach_sources(p, tailor_obj.by_id) for p in data["cover_letter"]]
     except LLMError as exc:
-        result["errors"].append({"step": "summary_letter", "error_type": exc.error_type,
-                                 "message": str(exc)})
+        result["errors"].append({"step": "cover_letter", "error_type": exc.error_type, "message": str(exc)})
     result["warnings"] = tailor_obj.warnings
     result["status"] = "complete" if not result["errors"] else "partial"
     return result
