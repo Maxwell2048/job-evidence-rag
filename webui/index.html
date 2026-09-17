@@ -46,6 +46,9 @@ label.check{display:flex;align-items:center;gap:8px;color:var(--muted);font-size
 .btn{position:relative;padding:12px 26px;border:0;border-radius:12px;font-size:15px;font-weight:600;color:#0b1020;background:linear-gradient(135deg,var(--accent),var(--accent2));cursor:pointer;transition:transform .15s,box-shadow .2s,filter .2s;box-shadow:0 10px 30px rgba(57,208,200,.25)}
 .btn:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 16px 40px rgba(124,140,255,.35);filter:brightness(1.05)}
 .btn:disabled{filter:grayscale(.7);opacity:.55;cursor:not-allowed;box-shadow:none}
+.btn.stop{display:none;color:var(--bad);background:rgba(255,107,107,.1);border:1px solid rgba(255,107,107,.45);box-shadow:none}
+.btn.stop:hover:not(:disabled){box-shadow:0 10px 30px rgba(255,107,107,.25)}
+.btn.mini{padding:4px 12px;font-size:12.5px;border-radius:8px;box-shadow:none}
 .msg{font-size:14px;color:var(--muted)}.msg.ok{color:var(--ok)}.msg.bad{color:var(--bad)}
 /* stepper */
 .stepper{display:grid;grid-template-columns:repeat(6,1fr);gap:0;position:relative;margin:10px 0 4px}
@@ -59,6 +62,7 @@ label.check{display:flex;align-items:center;gap:8px;color:var(--muted);font-size
 .step.done .node{border-color:var(--ok);background:rgba(61,220,132,.12);animation:pop .4s ease}
 .step.failed .node{border-color:var(--bad);background:rgba(255,107,107,.12);animation:shake .5s}
 .step.skipped .node{opacity:.35}
+.step.cancelled .node{border-color:var(--warn);background:rgba(246,183,60,.12)}
 @keyframes pop{0%{transform:scale(.7)}60%{transform:scale(1.15)}100%{transform:scale(1)}}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-5px)}75%{transform:translateX(5px)}}
 .step .lbl{font-size:13px;margin-top:10px;color:var(--text)}
@@ -114,11 +118,12 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:40px}
     <textarea id="jd" placeholder="把招聘广告正文粘贴到这里（至少 80 个字符）……"></textarea>
     <div class="row">
       <input type="text" id="name" placeholder="岗位或公司名（用于文件名，可留空）">
-      <label class="check"><input type="checkbox" id="interview" checked> 同时生成面试准备（约多 4 分钟）</label>
+      <label class="check"><input type="checkbox" id="interview"> 同时生成面试准备（约多 4 分钟；也可以之后在结果或历史里再生成）</label>
       <span class="counter"><span id="count">0</span> 字符</span>
     </div>
     <div class="row">
       <button class="btn" id="go" {% if not online %}disabled{% endif %}>✨ 生成</button>
+      <button class="btn stop" id="stop" title="停止当前任务并删除未完成的内容">⏹ 中止</button>
       <span class="msg" id="msg">{% if not online %}模型服务离线：先启动 llama-server，再刷新本页。{% else %}模型已就绪。{% endif %}</span>
     </div>
   </section>
@@ -146,11 +151,13 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:40px}
 
   <section class="card">
     <h2><span class="n">4</span>历史运行</h2>
-    <table><thead><tr><th>时间</th><th>JD</th><th>状态</th><th>判断</th><th>文档</th></tr></thead><tbody>
+    <table><thead><tr><th>时间</th><th>JD</th><th>状态</th><th>判断</th><th>文档</th><th>面试准备</th></tr></thead><tbody>
     {% for r in history %}<tr><td>{{ r.started }}</td><td>{{ r.jd }}</td><td>{{ r.status }}</td>
     <td>{% for k, v in r.counts.items() %}<span class="badge {{ k }}">{{ {'direct':'直接','related':'相关','insufficient':'不足','error':'错误'}.get(k, k) }} {{ v }}</span>{% endfor %}</td>
-    <td>{% for d in r.docs %}<a href="/run/{{ r.id }}/{{ d.file[:-3] }}.html">{{ d.label }}</a>{% endfor %}</td></tr>
-    {% else %}<tr><td colspan="5" class="msg">还没有运行记录</td></tr>{% endfor %}
+    <td>{% for d in r.docs %}<a href="/run/{{ r.id }}/{{ d.file[:-3] }}.html">{{ d.label }}</a>{% endfor %}
+        {% for f in r.downloads %}<a href="/run/{{ r.id }}/download/{{ f }}" title="{{ f }}">⬇ {{ 'Cover Letter' if 'Cover_Letter' in f or f.startswith('cover_letter') else 'Resume' }}.docx</a>{% endfor %}</td>
+    <td>{% if r.can_interview %}<button class="btn mini later" data-run="{{ r.id }}" {% if not online %}disabled{% endif %}>🎤 生成</button>{% elif 'interview_prep' in r.docs|map(attribute='stem')|list %}<span class="msg ok">已生成</span>{% else %}<span class="msg">—</span>{% endif %}</td></tr>
+    {% else %}<tr><td colspan="6" class="msg">还没有运行记录</td></tr>{% endfor %}
     </tbody></table>
   </section>
   <footer>所有生成内容均附来源引用；判断为证据不足的要求不会写进简历。投递前请删除 Markdown 里的来源附录。</footer>
@@ -158,10 +165,24 @@ footer{color:var(--muted);font-size:12px;text-align:center;margin-top:40px}
 
 <script>
 const $ = id => document.getElementById(id);
-const go = $('go'), msg = $('msg'), jd = $('jd');
+const go = $('go'), stop = $('stop'), msg = $('msg'), jd = $('jd');
 const STAGE_KEYS = [{% for key, label in stages %}'{{ key }}',{% endfor %}];
 const ICON_CHECK = '<svg class="check" viewBox="0 0 24 24"><path d="M5 12l5 5L20 7"/></svg>';
-let startedAt = null, ticker = null, poller = null;
+let startedAt = null, ticker = null, poller = null, currentJob = null;
+const ICONS = {save:'📋', match:'🔍', tailor:'✍️', build:'📄', docx:'📦', interview:'🎤'};
+
+function busy(on){
+  go.disabled = on; stop.style.display = on ? 'inline-block' : 'none'; stop.disabled = false;
+  document.querySelectorAll('.later').forEach(b => { b.disabled = on; });
+}
+function resetStepper(){
+  STAGE_KEYS.forEach(k => { const e = $('st-' + k); e.className = 'step'; e.querySelector('.node').innerHTML = '<span class="ic">' + ICONS[k] + '</span>'; $('st-' + k + '-m').textContent = ''; });
+  $('fill').style.width = '0';
+}
+function track(j, text){
+  currentJob = j.id; busy(true); msg.textContent = text; msg.className = 'msg';
+  startedAt = Date.now(); clearInterval(ticker); ticker = setInterval(tick, 1000); poll(j.id);
+}
 
 jd.addEventListener('input', () => { $('count').textContent = jd.value.length; });
 
@@ -171,6 +192,7 @@ function setStage(s){
   const node = el.querySelector('.node');
   if(s.status === 'done') node.innerHTML = ICON_CHECK;
   else if(s.status === 'failed' || s.status === 'blocked') node.innerHTML = '<span class="ic">✖</span>';
+  else if(s.status === 'cancelled') node.innerHTML = '<span class="ic">⏹</span>';
   const parts = [];
   if(s.seconds != null) parts.push(s.seconds + ' 秒');
   if(s.message) parts.push(s.message);
@@ -220,13 +242,41 @@ function showResult(j){
     a.innerHTML = `<div class="ic">⬇️</div><div class="t">${f}</div><div class="d">Word 下载</div>`;
     tiles.appendChild(a);
   });
+  const stems = (j.docs || []).map(d => d.stem);
+  if(stems.includes('resume_tailored') && !stems.includes('interview_prep')){
+    const b = document.createElement('a'); b.className = 'tile dl later'; b.href = '#'; b.style.animationDelay = '.5s';
+    b.innerHTML = '<div class="ic">🎤</div><div class="t">生成面试准备</div><div class="d">需要时再生成，约 4 分钟</div>';
+    b.onclick = e => { e.preventDefault(); startInterview(j.run_id); };
+    tiles.appendChild(b);
+  }
 }
+async function startInterview(runId){
+  if(go.disabled && stop.style.display !== 'none'){ return; }
+  resetStepper();
+  const r = await fetch('/api/interview/' + runId, { method: 'POST' });
+  const j = await r.json();
+  if(!r.ok){ msg.textContent = j.error || ('HTTP ' + r.status); msg.className = 'msg bad'; return; }
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+  track(j, '正在为这次运行生成面试准备，约 4 分钟。');
+}
+document.querySelectorAll('button.later').forEach(b => { b.onclick = () => startInterview(b.dataset.run); });
+stop.onclick = async () => {
+  if(!currentJob || !window.confirm('中止当前任务？\n粘贴 JD 发起的任务会连同未完成的运行目录和已保存的 JD 文件一起删除。')) return;
+  stop.disabled = true; msg.textContent = '正在中止…'; msg.className = 'msg';
+  const r = await fetch('/api/cancel/' + currentJob, { method: 'POST' });
+  if(!r.ok){ const j = await r.json(); msg.textContent = j.error || '中止失败'; msg.className = 'msg bad'; stop.disabled = false; }
+};
 async function poll(id){
   const r = await fetch('/api/status/' + id); if(!r.ok){ msg.textContent = '状态查询失败'; msg.className = 'msg bad'; return; }
   const j = await r.json();
   j.stages.forEach(setStage); setFill(j.stages);
   if(j.status === 'running' || j.status === 'queued'){ poller = setTimeout(() => poll(id), 3000); return; }
-  clearInterval(ticker); tick(); go.disabled = false;
+  clearInterval(ticker); tick(); busy(false);
+  if(j.status === 'cancelled'){
+    msg.textContent = j.error || '已中止'; msg.className = 'msg bad';
+    if(j.kind === 'full'){ $('placeholder').style.display = 'block'; $('result').style.display = 'none'; }
+    return;
+  }
   if(j.status === 'blocked'){ msg.textContent = j.error; msg.className = 'msg bad'; window.alert(j.error); return; }
   if(j.status === 'failed'){ msg.textContent = '失败：' + (j.error || ''); msg.className = 'msg bad'; }
   else { msg.textContent = '完成 🎉'; msg.className = 'msg ok'; confetti(); }
@@ -239,7 +289,9 @@ async function poll(id){
     if(!j) return;
     j.stages.forEach(setStage); setFill(j.stages);
     if(j.status === 'running' || j.status === 'queued'){
-      go.disabled = true; msg.textContent = '上次提交的任务仍在生成中，已恢复进度显示。'; startedAt = Date.now(); ticker = setInterval(tick, 1000); poll(j.id);
+      track(j, '上次提交的任务仍在生成中，已恢复进度显示。');
+    } else if(j.status === 'cancelled'){
+      msg.textContent = j.error || '上次任务已中止。'; msg.className = 'msg bad';
     } else if(j.status === 'blocked'){
       msg.textContent = j.error; msg.className = 'msg bad'; window.alert(j.error);
     } else if(j.run_id){
@@ -250,13 +302,12 @@ async function poll(id){
 })();
 go.onclick = async () => {
   msg.textContent = '正在提交…'; msg.className = 'msg';
-  document.querySelectorAll('.step').forEach((e, i) => { e.className = 'step'; e.querySelector('.node').innerHTML = '<span class="ic">' + ['📋','🔍','✍️','📄','📦','🎤'][i] + '</span>'; });
-  $('fill').style.width = '0'; $('placeholder').style.display = 'block'; $('result').style.display = 'none';
+  resetStepper(); $('placeholder').style.display = 'block'; $('result').style.display = 'none';
   const body = { jd_text: jd.value, jd_name: $('name').value, with_interview: $('interview').checked };
   const r = await fetch('/api/run', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
   const j = await r.json();
   if(!r.ok){ msg.textContent = j.error || ('HTTP ' + r.status); msg.className = 'msg bad'; return; }
-  go.disabled = true; msg.textContent = '生成中，通常需要 5 到 12 分钟。'; startedAt = Date.now(); ticker = setInterval(tick, 1000); poll(j.id);
+  track(j, '生成中，通常需要 5 到 12 分钟；可随时中止。');
 };
 </script>
 </body>

@@ -127,7 +127,7 @@ After adding your own experience, resume, and model configuration:
 .\.venv\Scripts\python.exe webapp.py --resume resume\base_resume.docx --config config.local.json
 ```
 
-Open `http://127.0.0.1:5000`. The interface orchestrates CLI stages, processes one job at a time, and displays progress, reports, history, and downloads. It binds to loopback and has no authentication; it is intended for local use, not public hosting.
+Open `http://127.0.0.1:5000`. The interface orchestrates CLI stages, processes one job at a time, and displays progress, reports, history, and downloads. A running job can be aborted; aborting a pasted-JD job also removes its unfinished run directory and saved JD file. Interview preparation is off by default and can be generated later for any finished run from the result or history view. It binds to loopback and has no authentication; it is intended for local use, not public hosting.
 
 `start.bat` is a convenience launcher for the original setup and expects a specific resume filename. Use the explicit command above for a different filename.
 
@@ -170,7 +170,8 @@ Matching creates `outputs/<timestamp>-<suffix>/`:
 | `report.md` | Matching report and preparation summary |
 | `run_meta.json` | Run status, input hashes, model settings, errors |
 | `cv_suggestions.*` | Optional CV suggestions and cover-letter drafts |
-| `resume_tailored.*` | Optional assembled resume and DOCX export |
+| `resume_tailored.*` | Optional assembled resume (Markdown and JSON) |
+| `<Name>_Resume_<jd>_<MMDD-HHMM>.docx`, `<Name>_Cover_Letter_…docx` | Optional Word exports, named per run so files from different applications cannot be confused |
 | `interview_prep.*` | Optional interview preparation |
 
 Extraction-only runs produce the extraction subset. Later generation may add numbered versions. Regenerating a summary updates `report.md` and `job_summary.json`; Word export can replace the DOCX associated with its selected Markdown input.

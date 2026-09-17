@@ -11,7 +11,9 @@ personal material and the model API key stays in config.local.json.
 """
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import threading
@@ -24,6 +26,7 @@ from flask import Flask, abort, jsonify, render_template, request, send_file
 
 import add_jd
 import build_site
+from export_docx import latest_docx
 from local_llm import load_config
 from tailor_cv import latest_output
 
@@ -38,36 +41,69 @@ DOCS = [("report", "匹配报告"), ("cv_suggestions", "CV 建议"),
         ("resume_tailored", "完整简历"), ("interview_prep", "面试准备")]
 
 
-def run_command(args, cwd):
-    """Default stage runner: (returncode, stdout, stderr)."""
-    completed = subprocess.run([PYTHON, "-X", "utf8", *args], cwd=cwd, capture_output=True,
-                               text=True, encoding="utf-8", errors="replace")
-    return completed.returncode, completed.stdout, completed.stderr
+def run_command(args, cwd, job=None):
+    """Default stage runner: (returncode, stdout, stderr). The process is
+    registered on the job so that a cancel request can stop it."""
+    process = subprocess.Popen([PYTHON, "-X", "utf8", *args], cwd=cwd, stdout=subprocess.PIPE,
+                               stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace")
+    if job is not None:
+        job.process = process
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        if job is not None:
+            job.process = None
+    return process.returncode, stdout, stderr
+
+
+def kill_tree(process):
+    """Stop a stage and its children; on Windows the venv python.exe is a
+    launcher whose real interpreter is a child process."""
+    if process is None or process.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+    else:
+        process.kill()
 
 
 class LocationBlocked(RuntimeError):
     pass
 
 
+class Cancelled(RuntimeError):
+    pass
+
+
 class Job:
-    def __init__(self, jd_name, with_interview):
+    """kind "full" runs every stage for a pasted JD; kind "interview" adds
+    interview prep to a run that already exists."""
+
+    def __init__(self, jd_name, with_interview, kind="full", run_dir=None):
         self.id = uuid.uuid4().hex[:8]
+        self.kind = kind
         self.jd_name = jd_name
         self.with_interview = with_interview
         self.created_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.started_stamp = time.strftime("%Y%m%d-%H%M%S")  # same format as run directory names
         self.stages = [{"key": k, "label": l, "status": "pending", "seconds": None, "message": ""}
                        for k, l in STAGES]
-        if not with_interview:
-            self.stages[-1]["status"] = "skipped"
-        self.run_dir = None
+        for stage in self.stages:
+            is_interview = stage["key"] == "interview"
+            if (kind == "interview" and not is_interview) or (kind == "full" and is_interview and not with_interview):
+                stage["status"] = "skipped"
+        self.run_dir = Path(run_dir) if run_dir else None
+        self.jd_path = None
         self.status = "queued"
         self.error = None
+        self.process = None
+        self.cancel_requested = False
 
     def stage(self, key):
         return next(s for s in self.stages if s["key"] == key)
 
     def to_dict(self):
-        return {"id": self.id, "jd_name": self.jd_name, "created_at": self.created_at,
+        return {"id": self.id, "kind": self.kind, "jd_name": self.jd_name, "created_at": self.created_at,
                 "status": self.status, "error": self.error,
                 "run_id": Path(self.run_dir).name if self.run_dir else None,
                 "stages": self.stages}
@@ -101,16 +137,50 @@ class Pipeline:
             return False, str(exc)
 
     # -- job control ------------------------------------------------------
-    def start(self, jd_text, jd_name, with_interview):
+    def _claim(self, job):
         with self.lock:
-            if self.current is not None and self.current.status == "running":
-                raise RuntimeError("已有任务在运行，请等待它完成")
-            job = Job(jd_name or "", with_interview)
+            if self.current is not None and self.current.status in ("queued", "running"):
+                raise RuntimeError("已有任务在运行，请等待它完成或先中止")
             self.jobs[job.id] = job
             self.current = job
-        thread = threading.Thread(target=self._run, args=(job, jd_text), daemon=True)
-        thread.start()
+
+    def start(self, jd_text, jd_name, with_interview=False):
+        job = Job(jd_name or "", with_interview)
+        self._claim(job)
+        threading.Thread(target=self._run, args=(job, jd_text), daemon=True).start()
         return job
+
+    def start_interview(self, run_dir):
+        """Interview prep for a finished run, requested later from the page."""
+        job = Job(Path(run_dir).name, True, kind="interview", run_dir=run_dir)
+        self._claim(job)
+        threading.Thread(target=self._run_interview, args=(job,), daemon=True).start()
+        return job
+
+    def cancel(self, job):
+        """Stop the running stage; the job thread then removes what it created."""
+        if job.status not in ("queued", "running"):
+            return False
+        job.cancel_requested = True
+        kill_tree(job.process)
+        return True
+
+    def _discard_unfinished(self, job):
+        """A cancelled full job leaves nothing behind: its run directory and the
+        JD file it saved. A cancelled interview job only stops; the finished
+        run it was adding to is kept."""
+        removed = []
+        if job.kind != "full":
+            return removed
+        outputs = self.outputs_dir.resolve()
+        if job.run_dir and Path(job.run_dir).resolve().parent == outputs and Path(job.run_dir).is_dir():
+            shutil.rmtree(job.run_dir, ignore_errors=True)
+            removed.append(Path(job.run_dir).name)
+        if job.jd_path and Path(job.jd_path).resolve().parent == self.jobs_dir.resolve() \
+                and Path(job.jd_path).is_file():
+            Path(job.jd_path).unlink()
+            removed.append(Path(job.jd_path).name)
+        return removed
 
     def _step(self, job, key, func):
         stage = job.stage(key)
@@ -127,8 +197,12 @@ class Pipeline:
         finally:
             stage["seconds"] = round(time.time() - started, 1)
 
-    def _cli(self, script, *args, ok_codes=(0,)):
-        code, stdout, stderr = self.runner([str(self.root / script), *args], str(self.root))
+    def _cli(self, script, *args, ok_codes=(0,), job=None):
+        if job is not None and job.cancel_requested:
+            raise Cancelled()
+        code, stdout, stderr = self.runner([str(self.root / script), *args], str(self.root), job=job)
+        if job is not None and job.cancel_requested:
+            raise Cancelled()
         if code not in ok_codes:
             tail = "\n".join((stderr or stdout).strip().splitlines()[-3:])
             raise RuntimeError(f"{script} 退出码 {code}：{tail}")
@@ -166,7 +240,7 @@ class Pipeline:
                 # them apart, so accept it here and decide below.
                 code, stdout, stderr = self._cli("match_job.py", "--jd", str(job.jd_path), "--config",
                                                  str(self.config_path), "--offline", "--out",
-                                                 str(self.outputs_dir), ok_codes=(0, 1, 3))
+                                                 str(self.outputs_dir), ok_codes=(0, 1, 3), job=job)
                 found = re.search(r"运行目录：(.+)", stdout)
                 if not found:
                     tail = "\n".join((stderr or stdout).strip().splitlines()[-3:])
@@ -185,28 +259,26 @@ class Pipeline:
             def tailor():
                 code, stdout, _ = self._cli("tailor_cv.py", "--run", str(job.run_dir), "--resume",
                                             str(self.resume_path), "--config", str(self.config_path),
-                                            ok_codes=(0, 1))
+                                            ok_codes=(0, 1), job=job)
                 return "partial（部分步骤失败，见 CV 建议末尾）" if code == 1 else ""
             self._step(job, "tailor", tailor)
 
             def build():
                 self._cli("build_resume.py", "--run", str(job.run_dir), "--resume",
-                          str(self.resume_path), "--config", str(self.config_path))
+                          str(self.resume_path), "--config", str(self.config_path), job=job)
                 return ""
             self._step(job, "build", build)
 
             def docx():
-                _, stdout, _ = self._cli("export_docx.py", "--run", str(job.run_dir), "--letter")
+                _, stdout, _ = self._cli("export_docx.py", "--run", str(job.run_dir), "--letter", job=job)
                 return f"{stdout.count('已写入')} 个文件"
             self._step(job, "docx", docx)
 
             if job.with_interview:
-                def interview():
-                    code, _, _ = self._cli("interview_prep.py", "--run", str(job.run_dir), "--config",
-                                           str(self.config_path), ok_codes=(0, 1))
-                    return "partial" if code == 1 else ""
-                self._step(job, "interview", interview)
+                self._step(job, "interview", lambda: self._interview(job))
             job.status = "done"
+        except Cancelled:
+            self._finish_cancelled(job)
         except LocationBlocked as exc:
             job.status = "blocked"
             job.error = str(exc)
@@ -215,8 +287,64 @@ class Pipeline:
                 if stage["status"] == "pending":
                     stage["status"] = "skipped"
         except Exception as exc:  # noqa: BLE001
-            job.status = "failed"
-            job.error = str(exc)
+            if job.cancel_requested:  # the killed stage surfaces as an ordinary failure
+                self._finish_cancelled(job)
+            else:
+                job.status = "failed"
+                job.error = str(exc)
+
+    def _interview(self, job):
+        code, _, _ = self._cli("interview_prep.py", "--run", str(job.run_dir), "--config",
+                               str(self.config_path), ok_codes=(0, 1), job=job)
+        return "partial" if code == 1 else ""
+
+    def _run_interview(self, job):
+        job.status = "running"
+        try:
+            self._step(job, "interview", lambda: self._interview(job))
+            job.status = "done"
+        except Exception as exc:  # noqa: BLE001
+            if job.cancel_requested:
+                self._finish_cancelled(job)
+            else:
+                job.status = "failed"
+                job.error = str(exc)
+
+    def _run_dir_for(self, job):
+        """The run directory match_job created for this job, when the stage was
+        stopped before it reported one. run_meta.json is only written at the
+        end, so the run is recognised by its copy of the JD, and only among
+        directories made after the job began: an earlier, finished run of the
+        same JD must never be taken for the unfinished one."""
+        if job.jd_path is None or not self.outputs_dir.is_dir():
+            return None
+        try:
+            jd_text = Path(job.jd_path).read_text(encoding="utf-8")
+        except OSError:
+            return None
+        for run in sorted(self.outputs_dir.iterdir(), reverse=True):
+            if not run.is_dir() or run.name[:15] < job.started_stamp:
+                continue
+            try:
+                if (run / "jd.txt").read_text(encoding="utf-8") == jd_text:
+                    return run
+            except OSError:
+                continue
+        return None
+
+    def _finish_cancelled(self, job):
+        if job.kind == "full" and job.run_dir is None:
+            job.run_dir = self._run_dir_for(job)
+        removed = self._discard_unfinished(job)
+        if job.kind == "full":
+            job.run_dir = None
+        job.status = "cancelled"
+        job.error = "已中止" + (f"，已删除未完成的内容：{'、'.join(removed)}" if removed else "")
+        for stage in job.stages:
+            if stage["status"] in ("running", "failed"):
+                stage["status"], stage["message"] = "cancelled", "已中止"
+            elif stage["status"] == "pending":
+                stage["status"] = "skipped"
 
 
 # ---------------------------------------------------------------- Flask app
@@ -231,12 +359,8 @@ def run_documents(run_dir):
         path = latest_output(run_dir, stem)
         if path is not None:
             docs.append({"stem": stem, "label": label, "file": path.name})
-    downloads = []
-    resume_docx = latest_output(run_dir, "resume_tailored", ".docx")
-    if resume_docx is not None:
-        downloads.append(resume_docx.name)
-    if (run_dir / "cover_letter.docx").exists():
-        downloads.append("cover_letter.docx")
+    downloads = [path.name for path in (latest_docx(run_dir, "resume"), latest_docx(run_dir, "cover_letter"))
+                 if path is not None]
     downloads += [d["file"] for d in docs]
     return docs, downloads
 
@@ -268,10 +392,13 @@ def create_app(pipeline=None):
         runs = build_site.scan_runs(pipe.outputs_dir)
         history = []
         for run in runs[:20]:
-            docs, _ = run_documents(run["dir"])
+            docs, downloads = run_documents(run["dir"])
+            stems = {d["stem"] for d in docs}
             history.append({"id": run["id"], "jd": Path(str(run["meta"].get("input", {}).get("jd_path", ""))).name,
                             "started": run["meta"].get("started_at", ""), "status": run["meta"].get("run_status"),
-                            "counts": run["counts"], "docs": docs})
+                            "counts": run["counts"], "docs": docs,
+                            "downloads": [f for f in downloads if f.endswith(".docx")],
+                            "can_interview": "resume_tailored" in stems and "interview_prep" not in stems})
         return render_template("index.html", online=online, model=model, history=history,
                                resume=str(pipe.resume_path), stages=STAGES)
 
@@ -287,9 +414,35 @@ def create_app(pipeline=None):
             return jsonify({"error": f"本机模型服务不在线：{model}"}), 503
         try:
             job = pipe.start(jd_text, (data.get("jd_name") or "").strip(),
-                             str(data.get("with_interview", "1")).lower() in ("1", "true", "on", "yes"))
+                             str(data.get("with_interview", "0")).lower() in ("1", "true", "on", "yes"))
         except RuntimeError as exc:
             return jsonify({"error": str(exc)}), 409
+        return jsonify(job.to_dict()), 202
+
+    @app.post("/api/interview/<run_id>")
+    def api_interview(run_id):
+        """Interview prep for a finished run, on request."""
+        pipe = app.config["PIPELINE"]
+        run_dir = _run_dir(run_id)
+        if latest_output(run_dir, "resume_tailored") is None:
+            return jsonify({"error": "这次运行没有生成简历，无法准备面试"}), 400
+        online, model = pipe.model_online()
+        if not online:
+            return jsonify({"error": f"本机模型服务不在线：{model}"}), 503
+        try:
+            job = pipe.start_interview(run_dir)
+        except RuntimeError as exc:
+            return jsonify({"error": str(exc)}), 409
+        return jsonify(job.to_dict()), 202
+
+    @app.post("/api/cancel/<job_id>")
+    def api_cancel(job_id):
+        pipe = app.config["PIPELINE"]
+        job = pipe.jobs.get(job_id)
+        if job is None:
+            abort(404)
+        if not pipe.cancel(job):
+            return jsonify({"error": "任务已经结束，无需中止"}), 409
         return jsonify(job.to_dict()), 202
 
     @app.get("/api/status/<job_id>")
@@ -348,10 +501,12 @@ def create_app(pipeline=None):
     @app.get("/run/<run_id>/download/<name>")
     def download(run_id, name):
         run_dir = _run_dir(run_id)
-        if not re.fullmatch(r"[A-Za-z_]+(-[0-9]+)?\.(md|docx|json)", name):
+        # File names now carry the JD name, which may hold any letters; what matters
+        # is that the file sits directly in this run directory.
+        if not re.fullmatch(r"[\w\-]+(\.[\w\-]+)*\.(md|docx|json)", name):
             abort(404)
         path = run_dir / name
-        if not path.exists():
+        if not path.is_file() or path.resolve().parent != run_dir.resolve():
             abort(404)
         return send_file(path, as_attachment=True)
 

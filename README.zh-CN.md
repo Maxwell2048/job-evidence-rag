@@ -127,7 +127,7 @@ Copy-Item project_template.md experiences\my_project.md
 .\.venv\Scripts\python.exe webapp.py --resume resume\base_resume.docx --config config.local.json
 ```
 
-打开 `http://127.0.0.1:5000`。页面按顺序调度各命令行阶段，一次只处理一个任务，显示进度、报告、历史记录和下载。它只绑定本机回环地址，没有登录，只用于本机，不要公开托管。
+打开 `http://127.0.0.1:5000`。页面按顺序调度各命令行阶段，一次只处理一个任务，显示进度、报告、历史记录和下载。运行中的任务可以中止；中止由粘贴 JD 发起的任务时，会一并删除未完成的运行目录和已保存的 JD 文件。面试准备默认不生成，之后可以在结果区或历史记录里为任何已完成的运行补生成。它只绑定本机回环地址，没有登录，只用于本机，不要公开托管。
 
 `start.bat` 是针对原始配置的一键启动器，要求简历底稿使用固定文件名。文件名不同时请使用上面的显式命令。
 
@@ -170,7 +170,8 @@ $runDir = 'outputs\YOUR_RUN_DIRECTORY'
 | `report.md` | 匹配报告与准备总结 |
 | `run_meta.json` | 运行状态、输入哈希、模型设置、错误 |
 | `cv_suggestions.*` | 可选：CV 建议与 Cover Letter 草稿 |
-| `resume_tailored.*` | 可选：组装好的简历与 DOCX 导出 |
+| `resume_tailored.*` | 可选：组装好的简历（Markdown 与 JSON） |
+| `<姓名>_Resume_<jd>_<月日-时分>.docx`、`<姓名>_Cover_Letter_…docx` | 可选：Word 导出，文件名按运行区分，多次投递的文件不会混淆 |
 | `interview_prep.*` | 可选：面试准备 |
 
 只做提取的运行只产生提取相关的子集。后续生成可能追加带编号的版本。重新生成总结会更新 `report.md` 和 `job_summary.json`；Word 导出会替换与所选 Markdown 对应的 DOCX。

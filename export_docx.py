@@ -1,7 +1,7 @@
 """Export the assembled resume (and cover letter) from a run directory to .docx
 in the layout of the author's original resume (resume/base_resume.docx).
 
-    python export_docx.py --run outputs/<run>            # resume_tailored*.md -> resume_tailored.docx
+    python export_docx.py --run outputs/<run>            # resume_tailored*.md -> <Name>_Resume_<jd>_<time>.docx
     python export_docx.py --run outputs/<run> --letter   # also cover letter from cv_suggestions*.json
 
 Layout reproduced from the original: A4 with a full-width navy header band
@@ -25,7 +25,7 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
-from tailor_cv import latest_output
+from tailor_cv import latest_output, output_number
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FONT = "Calibri"
@@ -296,10 +296,12 @@ def _education(doc, section):
                 _run(para, text, size=8, bold=True, color=NAVY)
 
 
-def _project_block(container, block, title_size=9):
+def _project_block(container, block, title_size=9, keep_heading=True):
     if block["heading"]:
         para = _para(container, before=2.4, after=0.3)
-        para.paragraph_format.keep_with_next = True
+        # Inside a table Word reads keep-with-next as "keep this row with the
+        # next row", which glues the whole table together; only use it in body text.
+        para.paragraph_format.keep_with_next = keep_heading
         _run(para, block["heading"], size=title_size, bold=True, color=NAVY)
     for line in block["lines"]:
         if line["kind"] == "bullet":
@@ -310,13 +312,29 @@ def _project_block(container, block, title_size=9):
 
 
 def _two_columns(doc, blocks, renderer):
-    table = _table(doc, [CONTENT_CM / 2, CONTENT_CM / 2])
-    cells = table.rows[0].cells
-    for cell in cells:
-        _cell_margins(cell, left=2, right=6)
-        cell.paragraphs[0]._p.getparent().remove(cell.paragraphs[0]._p)
-    for index, block in enumerate(blocks):
-        renderer(cells[index % 2], block)
+    """Two blocks per table row. One tall row holding everything would not
+    break across pages in Word and jumps to the next page as a whole, leaving
+    a large gap; short rows flow with the text."""
+    half = CONTENT_CM / 2
+    table = _table(doc, [half, half])
+    table.rows[0]._tr.getparent().remove(table.rows[0]._tr)
+    for start in range(0, len(blocks), 2):
+        row = table.add_row()
+        row._tr.get_or_add_trPr().append(OxmlElement("w:cantSplit"))  # no orphaned last line
+        pair = blocks[start:start + 2]
+        if len(pair) == 1:  # an odd last block takes the full width: fewer lines than half a column
+            cells = [row.cells[0].merge(row.cells[1])]
+            cells[0].width = Cm(CONTENT_CM)
+        else:
+            cells = list(row.cells)
+            for cell in cells:
+                cell.width = Cm(half)
+        for cell, block in zip(cells, pair):
+            _cell_margins(cell, left=2, right=6)
+            for stray in list(cell.paragraphs):
+                stray._p.getparent().remove(stray._p)
+            renderer(cell, block)
+    return table
 
 
 def _skills(doc, section):
@@ -371,7 +389,8 @@ def render_resume(parsed, out_path):
             _education(doc, sec)
         elif "PROJECT" in key and ("ADDITIONAL" in key or "OTHER" in key):
             _two_columns(doc, sec["blocks"],
-                         lambda cell, block: _project_block(cell, block, title_size=8.5))
+                         lambda cell, block: _project_block(cell, block, title_size=8.5,
+                                                            keep_heading=False))
         elif "PROJECT" in key or "EXPERIENCE" in key:
             for block in sec["blocks"]:
                 _project_block(doc, block)
@@ -415,19 +434,63 @@ def cover_letter_to_docx(suggestions, out_path, name_line=None):
     return out_path
 
 
+DOCX_KINDS = {"resume": "Resume", "cover_letter": "Cover_Letter"}
+LEGACY_DOCX = {"resume": "resume_tailored", "cover_letter": "cover_letter"}
+
+
+def _file_part(text, limit):
+    """Letters, digits and hyphens only, so the name is safe on any file system."""
+    cleaned = re.sub(r"[^\w\-]+", "-", text, flags=re.UNICODE).replace("_", "-")
+    return re.sub(r"-{2,}", "-", cleaned).strip("-")[:limit].rstrip("-")
+
+
+def run_label(run_dir):
+    """What tells one run's files from another's: the JD name (the name typed
+    on the page, else the first words of the JD) and when the run started."""
+    run_dir = Path(run_dir)
+    jd_stem = ""
+    try:
+        meta = json.loads((run_dir / "run_meta.json").read_text(encoding="utf-8"))
+        jd_stem = Path(str(meta.get("input", {}).get("jd_path", "")).replace("\\", "/")).stem
+    except (OSError, ValueError):
+        pass
+    jd_part = _file_part(re.sub(r"^\d{8}-\d{4}-", "", jd_stem), 40)
+    stamp = re.match(r"\d{4}(\d{4})-(\d{4})", run_dir.name)
+    when = f"{stamp.group(1)}-{stamp.group(2)}" if stamp else _file_part(run_dir.name, 20)
+    return "_".join(part for part in (jd_part, when) if part)
+
+
+def docx_name(kind, person, run_dir, number=1):
+    """e.g. Alex_Sample_Resume_acme-service-desk_0917-1459.docx (-2 for a re-export
+    of a second resume version in the same run)."""
+    who = "_".join(word.capitalize() for word in _file_part(person or "", 40).split("-") if word)
+    parts = [part for part in (who, DOCX_KINDS[kind], run_label(run_dir)) if part]
+    return "_".join(parts) + (f"-{number}" if number > 1 else "") + ".docx"
+
+
+def latest_docx(run_dir, kind):
+    """Newest exported .docx of a kind, including files written under the old
+    fixed names (resume_tailored.docx, cover_letter.docx)."""
+    run_dir = Path(run_dir)
+    files = list(run_dir.glob(f"*_{DOCX_KINDS[kind]}_*.docx")) + list(run_dir.glob(f"{LEGACY_DOCX[kind]}*.docx"))
+    return max(files, key=lambda path: path.stat().st_mtime) if files else None
+
+
 def export_run(run_dir, with_letter=False, resume_md=None):
     run_dir = Path(run_dir)
     md_path = Path(resume_md) if resume_md else latest_output(run_dir, "resume_tailored")
     if md_path is None:
         raise ValueError(f"{run_dir} 里没有 resume_tailored*.md；先运行 build_resume.py")
     lines = resume_body(md_path.read_text(encoding="utf-8"))
-    outputs = {"resume": markdown_to_docx(lines, md_path.with_suffix(".docx"))}
+    name_line = next((l[2:].strip() for l in lines if l.startswith("# ")), None)
+    number = output_number(md_path, "resume_tailored")
+    outputs = {"resume": markdown_to_docx(lines, run_dir / docx_name("resume", name_line, run_dir, number))}
     if with_letter:
         suggestions_path = latest_output(run_dir, "cv_suggestions", ".json")
         if suggestions_path is not None:
             suggestions = json.loads(suggestions_path.read_text(encoding="utf-8"))
-            name_line = next((l[2:].strip() for l in lines if l.startswith("# ")), None)
-            letter = cover_letter_to_docx(suggestions, run_dir / "cover_letter.docx", name_line)
+            letter = cover_letter_to_docx(suggestions, run_dir / docx_name("cover_letter", name_line, run_dir),
+                                          name_line)
             if letter is not None:
                 outputs["cover_letter"] = letter
     return outputs

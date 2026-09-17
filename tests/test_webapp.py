@@ -9,21 +9,35 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import webapp
 
+DOCX = "Alex_Sample_Resume_acme_0912-0000.docx"
 JD = "Senior Data Engineer\n\nRequired\n" + "Experience with SQL and Python. " * 6
 
 
 class FakeRunner:
     """Simulates the CLI tools by writing the files each stage would produce."""
 
-    def __init__(self, outputs_dir, fail_at=None, match_status="complete"):
+    def __init__(self, outputs_dir, fail_at=None, match_status="complete", hang_at=None):
         self.outputs_dir = Path(outputs_dir)
         self.fail_at = fail_at
         self.match_status = match_status
+        self.hang_at = hang_at
         self.calls = []
 
-    def __call__(self, args, cwd):
+    def __call__(self, args, cwd, job=None):
         script = Path(args[0]).name
         self.calls.append(script)
+        if script == self.hang_at:
+            # A stage that runs until it is cancelled; match_job has by then copied
+            # the JD into a new run directory but not yet written run_meta.json.
+            if script == "match_job.py":
+                run = self.outputs_dir / time.strftime("%Y%m%d-%H%M%S-abcdef")
+                run.mkdir(parents=True, exist_ok=True)
+                (run / "jd.txt").write_text(Path(args[args.index("--jd") + 1]).read_text(encoding="utf-8"),
+                                            encoding="utf-8")
+            deadline = time.time() + 5
+            while not job.cancel_requested and time.time() < deadline:
+                time.sleep(0.02)
+            return 1, "", "killed"
         if script == self.fail_at:
             return 1, "", "boom\nsecond line"
         if script == "match_job.py":
@@ -53,7 +67,7 @@ class FakeRunner:
             (run / "resume_tailored.md").write_text("# ALEX SAMPLE\n", encoding="utf-8")
             return 0, "已写入", ""
         if script == "export_docx.py":
-            (run / "resume_tailored.docx").write_bytes(b"PK")
+            (run / DOCX).write_bytes(b"PK")
             return 0, "已写入（resume）：x\n已写入（cover_letter）：y\n", ""
         if script == "interview_prep.py":
             (run / "interview_prep.md").write_text("# 面试准备\n", encoding="utf-8")
@@ -95,7 +109,7 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(list((Path(tmp) / "jobs").glob("*-acme.txt")))
             docs, downloads = webapp.run_documents(job.run_dir)
             self.assertEqual([d["stem"] for d in docs], ["report", "cv_suggestions", "resume_tailored", "interview_prep"])
-            self.assertIn("resume_tailored.docx", downloads)
+            self.assertIn(DOCX, downloads)
 
     def test_partial_match_continues_with_a_clear_message(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -121,6 +135,65 @@ class PipelineTests(unittest.TestCase):
             self.assertIn("引用不是章节原文", job.error)
             self.assertNotIn("job_readiness_summary", job.error)
             self.assertEqual(runner.calls, ["match_job.py"])
+
+    def test_interview_is_off_by_default_and_can_be_added_to_a_finished_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = Path(tmp) / "outputs"
+            runner = FakeRunner(outputs)
+            pipe = OnlinePipeline(project_root=Path(tmp), jobs_dir=Path(tmp) / "jobs", outputs_dir=outputs,
+                                  runner=runner)
+            job = wait_for(pipe.start(JD, "acme"))
+            self.assertEqual(job.status, "done", job.error)
+            self.assertEqual(job.stage("interview")["status"], "skipped")
+            self.assertNotIn("interview_prep.py", runner.calls)
+            later = wait_for(pipe.start_interview(job.run_dir))
+            self.assertEqual(later.status, "done", later.error)
+            self.assertEqual(later.kind, "interview")
+            self.assertEqual([s["status"] for s in later.stages], ["skipped"] * 5 + ["done"])
+            self.assertEqual(runner.calls[-1], "interview_prep.py")
+            self.assertTrue((job.run_dir / "interview_prep.md").exists())
+
+    def test_cancel_stops_the_job_and_removes_what_it_created(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = Path(tmp) / "outputs"
+            older = outputs / "20200101-000000-aaaaaa"  # a finished run of the very same JD
+            older.mkdir(parents=True)
+            runner = FakeRunner(outputs, hang_at="match_job.py")
+            pipe = OnlinePipeline(project_root=Path(tmp), jobs_dir=Path(tmp) / "jobs", outputs_dir=outputs,
+                                  runner=runner)
+            job = pipe.start(JD, "acme")
+            deadline = time.time() + 5
+            while "match_job.py" not in runner.calls and time.time() < deadline:
+                time.sleep(0.02)
+            (older / "jd.txt").write_text(job.jd_path.read_text(encoding="utf-8"), encoding="utf-8")
+            self.assertTrue(pipe.cancel(job))
+            wait_for(job)
+            self.assertEqual(job.status, "cancelled")
+            self.assertIn("已删除未完成的内容", job.error)
+            self.assertEqual(job.stage("match")["status"], "cancelled")
+            self.assertEqual(job.stage("tailor")["status"], "skipped")
+            self.assertEqual([p.name for p in outputs.iterdir()], [older.name])  # only the new run went
+            self.assertEqual(list((Path(tmp) / "jobs").glob("*.txt")), [])
+            self.assertEqual(runner.calls, ["match_job.py"])
+            self.assertFalse(pipe.cancel(job))  # nothing left to cancel
+            wait_for(pipe.start(JD, "acme"))  # and the slot is free again
+
+    def test_cancelling_interview_prep_keeps_the_finished_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outputs = Path(tmp) / "outputs"
+            pipe = OnlinePipeline(project_root=Path(tmp), jobs_dir=Path(tmp) / "jobs", outputs_dir=outputs,
+                                  runner=FakeRunner(outputs))
+            done = wait_for(pipe.start(JD, "acme"))
+            pipe.runner = FakeRunner(outputs, hang_at="interview_prep.py")
+            later = pipe.start_interview(done.run_dir)
+            deadline = time.time() + 5
+            while not pipe.runner.calls and time.time() < deadline:
+                time.sleep(0.02)
+            pipe.cancel(later)
+            wait_for(later)
+            self.assertEqual(later.status, "cancelled")
+            self.assertTrue((done.run_dir / "resume_tailored.md").exists())
+            self.assertTrue((done.run_dir / DOCX).exists())
 
     def test_failure_marks_stage_and_job(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -162,20 +235,31 @@ class AppTests(unittest.TestCase):
             status = client.get(f"/api/status/{job_id}").get_json()
             self.assertEqual(status["status"], "done")
             self.assertEqual(status["run_id"], "20260912-000000-abcdef")
-            self.assertIn("resume_tailored.docx", status["downloads"])
+            self.assertIn(DOCX, status["downloads"])
             self.assertEqual(status["counts"], {"direct": 1, "related": 0, "insufficient": 0, "error": 0})
             current = client.get("/api/current").get_json()["job"]
             self.assertEqual(current["id"], job_id)
             self.assertEqual(current["status"], "done")
-            self.assertIn("resume_tailored.docx", current["downloads"])
+            self.assertIn(DOCX, current["downloads"])
             view = client.get("/run/20260912-000000-abcdef/resume_tailored.html")
             self.assertEqual(view.status_code, 200)
             self.assertIn(b"<h1>ALEX SAMPLE</h1>", view.data)
-            self.assertIn(b"resume_tailored.docx", view.data)
-            dl = client.get("/run/20260912-000000-abcdef/download/resume_tailored.docx")
+            self.assertIn(DOCX.encode(), view.data)
+            dl = client.get(f"/run/20260912-000000-abcdef/download/{DOCX}")
             self.assertEqual(dl.status_code, 200)
             dl.close()  # release the file handle so the temp dir can be removed on Windows
             self.assertEqual(client.get("/run/20260912-000000-abcdef/download/../secret").status_code, 404)
+            self.assertEqual(client.get("/run/20260912-000000-abcdef/download/..%5Crun_meta.json").status_code, 404)
+            # history offers interview prep for this run, and the endpoints answer
+            self.assertIn('data-run="20260912-000000-abcdef"'.encode(), client.get("/").data)
+            self.assertEqual(client.post(f"/api/cancel/{job_id}").status_code, 409)  # already finished
+            self.assertEqual(client.post("/api/cancel/zzz").status_code, 404)
+            self.assertEqual(client.post("/api/interview/nope").status_code, 404)
+            added = client.post("/api/interview/20260912-000000-abcdef")
+            self.assertEqual(added.status_code, 202)
+            self.assertEqual(added.get_json()["kind"], "interview")
+            wait_for(pipe.jobs[added.get_json()["id"]])
+            self.assertNotIn('data-run="20260912-000000-abcdef"'.encode(), client.get("/").data)
             self.assertEqual(client.get("/run/nope/report.html").status_code, 404)
             self.assertEqual(client.get("/api/status/zzz").status_code, 404)
 

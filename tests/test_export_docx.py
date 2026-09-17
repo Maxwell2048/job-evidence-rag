@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import export_docx
 from docx import Document
+from docx.oxml.ns import qn
 
 MD = """# ALEX SAMPLE
 IT Graduate · Data Analysis
@@ -131,7 +132,13 @@ B.Eng. Food Science (2020.09 – 2024.06)
             (run / "resume_tailored.md").write_text(MD, encoding="utf-8")
             (run / "cv_suggestions.json").write_text(json.dumps({"cover_letter": [
                 {"text": "Dear Hiring Manager,\n\nI am writing about the role."}]}), encoding="utf-8")
+            (run / "run_meta.json").write_text(json.dumps({"input": {
+                "jd_path": "D:\\x\\jobs\\20260912-0930-acme service_desk!.txt"}}), encoding="utf-8")
             outputs = export_docx.export_run(run, with_letter=True)
+            # each run's files carry the person, the JD name and the run time
+            self.assertRegex(outputs["resume"].name, r"^Alex_Sample_Resume_acme-service-desk_.+\.docx$")
+            self.assertRegex(outputs["cover_letter"].name, r"^Alex_Sample_Cover_Letter_acme-service-desk_.+\.docx$")
+            self.assertEqual(export_docx.latest_docx(run, "resume"), outputs["resume"])
             doc = Document(outputs["resume"])
             paras = all_paragraphs(doc)
             texts = [p.text for p in paras if p.text.strip()]
@@ -166,6 +173,39 @@ B.Eng. Food Science (2020.09 – 2024.06)
             letter_texts = [p.text for p in Document(outputs["cover_letter"]).paragraphs if p.text.strip()]
             self.assertEqual(letter_texts[0], "ALEX SAMPLE")
             self.assertIn("I am writing about the role.", letter_texts)
+
+    def test_file_names_tell_runs_apart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            first = Path(tmp) / "20260917-145916-63174a"
+            second = Path(tmp) / "20260918-091500-0a1b2c"
+            for run, jd in ((first, "20260917-1459-acme-service-desk.txt"), (second, "20260918-0915-关于 这个岗位.txt")):
+                run.mkdir()
+                (run / "run_meta.json").write_text(json.dumps({"input": {"jd_path": "jobs/" + jd}}), encoding="utf-8")
+            self.assertEqual(export_docx.docx_name("resume", "ALEX SAMPLE", first),
+                             "Alex_Sample_Resume_acme-service-desk_0917-1459.docx")
+            self.assertEqual(export_docx.docx_name("cover_letter", "ALEX SAMPLE", second, 2),
+                             "Alex_Sample_Cover_Letter_关于-这个岗位_0918-0915-2.docx")
+            bare = Path(tmp) / "20260919-101010-ffffff"  # no metadata: the time alone still separates runs
+            bare.mkdir()
+            self.assertEqual(export_docx.docx_name("resume", None, bare), "Resume_0919-1010.docx")
+            (first / "resume_tailored.docx").write_bytes(b"PK")  # exported before the naming change
+            self.assertEqual(export_docx.latest_docx(first, "resume").name, "resume_tailored.docx")
+            self.assertIsNone(export_docx.latest_docx(first, "cover_letter"))
+
+    def test_other_projects_flow_in_short_rows(self):
+        blocks = [{"heading": f"Project {i}", "lines": [{"kind": "bullet", "text": "Did a thing."}]} for i in range(3)]
+        doc = Document()
+        table = export_docx._two_columns(doc, blocks, lambda cell, block: export_docx._project_block(
+            cell, block, keep_heading=False))
+        self.assertEqual(len(table.rows), 2)  # two projects per row, not one tall unbreakable row
+        self.assertEqual([c.paragraphs[0].text for c in table.rows[0].cells], ["Project 0", "Project 1"])
+        last = table.rows[1]  # the odd block spans both columns
+        self.assertEqual(last.cells[0]._tc, last.cells[1]._tc)
+        self.assertEqual(last.cells[0].paragraphs[0].text, "Project 2")
+        for row in table.rows:
+            self.assertIsNotNone(row._tr.trPr.find(qn("w:cantSplit")))
+            for cell in row.cells:
+                self.assertFalse(any(p.paragraph_format.keep_with_next for p in cell.paragraphs))
 
     def test_missing_resume_is_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
