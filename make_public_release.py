@@ -14,7 +14,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 INCLUDE_FILES = [
-    "README.md", "README.zh-CN.md", "LICENSE", "requirements.txt", "config.local.example.json",
+    "README.md", "README.zh-CN.md", "CHANGELOG.md", "LICENSE", "requirements.txt", "requirements-test.txt",
+    ".github/workflows/tests.yml", "config.local.example.json",
     "project_template.md", "start.bat", "make_public_release.py",
     "add_jd.py", "build_resume.py", "build_site.py", "evidence_matcher.py", "export_docx.py",
     "import_uwa_kb.py", "interview_prep.py", "jd_parser.py", "job_identity.py", "job_summary.py", "local_llm.py",
@@ -94,9 +95,13 @@ def copy_tree(out):
     out = validate_destination(out)
     files = INCLUDE_FILES + [f"tests/{name}" for name in INCLUDE_TESTS]
     # Resolve and validate every allowlisted input before writing anything.
+    # A link anywhere below the project root changes the resolved path. Compare
+    # against the resolved root: the root itself may legitimately be spelled
+    # differently (Windows 8.3 short names such as RUNNER~1 in temp paths).
+    root = PROJECT_ROOT.resolve()
     for rel in files:
         src = PROJECT_ROOT / rel
-        if not src.is_file() or src.resolve() != src.absolute():
+        if not src.is_file() or src.resolve() != root / rel:
             raise ValueError(f"Missing or linked source file: {rel}")
     out.mkdir(parents=True, exist_ok=True)
     for rel in files:

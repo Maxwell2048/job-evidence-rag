@@ -1,0 +1,6 @@
+# What the test suite needs. The embedding model (sentence-transformers, see
+# requirements.txt) is imported lazily and the tests never load it; numpy
+# normally arrives with it and is used by the retriever tests.
+flask>=3,<4
+python-docx>=1.1,<2
+numpy>=1.26
