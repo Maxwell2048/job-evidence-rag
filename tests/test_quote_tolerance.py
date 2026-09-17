@@ -91,5 +91,35 @@ class JdNameNumberTests(unittest.TestCase):
         self.assertTrue(any("365" in e for e in strict))
 
 
+PROFILE_TEXT = "我使用 PostgreSQL、SQL、pandas 做 ETL，在 GeoMind 中实际操作过 CI 和 CD。"
+
+
+class PruneQuoteTests(unittest.TestCase):
+    def setUp(self):
+        self.by_id = {"M001": {"text": PROFILE_TEXT, "scope": "personal"}}
+        self.good = {"material_id": "M001", "quote": "PostgreSQL, SQL, pandas 做 ETL"}  # commas for 、
+        self.bad = {"material_id": "M001", "quote": "我在 GeoMind 中实际操作过 CI 和 CD"}  # an added word
+
+    def test_chinese_punctuation_is_ignored_like_english_punctuation(self):
+        item = {"text": "I build ETL with SQL.", "basis": [self.good]}
+        self.assertEqual(validate_basis([item], self.by_id, ["M001"]), [])
+
+    def test_a_bad_quote_is_dropped_when_a_valid_one_remains(self):
+        item = {"text": "I build ETL and ran CI.", "basis": [self.good, self.bad]}
+        self.assertTrue(validate_basis([dict(item)], self.by_id, ["M001"]))  # strict by default
+        self.assertEqual(validate_basis([item], self.by_id, ["M001"], prune_quotes=True), [])
+        self.assertEqual(item["basis"], [self.good])  # only verified text is kept
+
+    def test_an_item_left_without_any_valid_quote_still_fails(self):
+        item = {"text": "I ran CI.", "basis": [self.bad]}
+        errors = validate_basis([item], self.by_id, ["M001"], prune_quotes=True)
+        self.assertTrue(any("逐字连续原文" in e for e in errors))
+
+    def test_summary_length_limit(self):
+        item = {"text": "x" * 460, "basis": [self.good]}
+        errors = validate_basis([item], self.by_id, ["M001"], max_chars=450)
+        self.assertTrue(any("超过上限 450" in e for e in errors))
+
+
 if __name__ == "__main__":
     unittest.main()

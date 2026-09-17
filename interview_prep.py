@@ -150,7 +150,7 @@ def validate_answer(points, by_id, allowed, jd_text, label="第 {index} 个 poin
     errors = []
     with_basis = [p for p in points if p.get("part") != "Honest" or p.get("basis")]
     errors += validate_basis(with_basis, by_id, allowed, label=label, jd_text=jd_text,
-                             allow_jd_names=True)
+                             allow_jd_names=True, prune_quotes=True)
     pool = "\n".join(by_id[i]["text"] for i in allowed)
     for index, point in enumerate(points, 1):
         if point.get("part") == "Honest" and not point.get("basis"):

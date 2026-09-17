@@ -191,6 +191,8 @@ def validate_document(data, by_id, allowed, jd_text, required=(), refs=None):
                                      label=f"第 {s_index} 节第 {l_index} 行", jd_text=jd_text,
                                      no_course_codes=True)
         for l_index, line in enumerate(lines, 1):
+            if line.get("_from_ref"):
+                continue  # the model cannot shorten program-filled text; asking it to only breaks the ref
             if len(line.get("text", "")) > MAX_LINE_CHARS:
                 errors.append(f"第 {s_index} 节第 {l_index} 行超过 {MAX_LINE_CHARS} 字符，请拆分或精简")
     return errors
