@@ -27,6 +27,10 @@ so changes are grouped by date.
 
 ### Fixed
 
+- An assembled resume could contain a Chinese project heading copied from the experience file's title. Each
+  project now gets an English resume title, every resume and cover-letter line is checked for Chinese text,
+  and Word export refuses a document that still contains any (#6).
+- The cover letter rejected product names from the JD such as "Microsoft 365" as invented numbers (#7).
 - Resume assembly failed when the generated summary was longer than 500 characters: the summary is now
   limited to 450 characters and program-filled lines are no longer sent back for shortening (#2).
 - The cover letter always failed with an experience library written in Chinese: the model offered translated

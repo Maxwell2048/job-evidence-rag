@@ -26,7 +26,7 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 from job_identity import load_identity
-from tailor_cv import latest_output, output_number
+from tailor_cv import latest_output, non_english, output_number
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 FONT = "Calibri"
@@ -493,12 +493,22 @@ def latest_docx(run_dir, kind):
     return max(files, key=lambda path: path.stat().st_mtime) if files else None
 
 
+def ensure_english(lines, what):
+    """Last gate before a document leaves the pipeline: no Chinese text."""
+    bad = [(number, line) for number, line in enumerate(lines, 1) if non_english(line)]
+    if bad:
+        listing = "；".join(f"第 {number} 行 {line.strip()[:60]!r}" for number, line in bad[:5])
+        raise ValueError(f"{what}含中文，未导出（共 {len(bad)} 行）：{listing}。"
+                         "请重新运行 tailor_cv.py 和 build_resume.py 生成全英文版本")
+
+
 def export_run(run_dir, with_letter=False, resume_md=None, label=None):
     run_dir = Path(run_dir)
     md_path = Path(resume_md) if resume_md else latest_output(run_dir, "resume_tailored")
     if md_path is None:
         raise ValueError(f"{run_dir} 里没有 resume_tailored*.md；先运行 build_resume.py")
     lines = resume_body(md_path.read_text(encoding="utf-8"))
+    ensure_english(lines, f"简历 {md_path.name} ")
     name_line = next((l[2:].strip() for l in lines if l.startswith("# ")), None)
     number = output_number(md_path, "resume_tailored")
     outputs = {"resume": markdown_to_docx(lines, run_dir / docx_name("resume", name_line, run_dir, number, label))}
@@ -506,6 +516,8 @@ def export_run(run_dir, with_letter=False, resume_md=None, label=None):
         suggestions_path = latest_output(run_dir, "cv_suggestions", ".json")
         if suggestions_path is not None:
             suggestions = json.loads(suggestions_path.read_text(encoding="utf-8"))
+            ensure_english([p.get("text", "") for p in suggestions.get("cover_letter", [])],
+                           f"Cover Letter（{suggestions_path.name}）")
             letter = cover_letter_to_docx(suggestions, run_dir / docx_name("cover_letter", name_line, run_dir, label=label),
                                           name_line)
             if letter is not None:

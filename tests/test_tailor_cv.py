@@ -187,10 +187,11 @@ class EndToEndTests(unittest.TestCase):
         good_bullet = {"text": "Annotated 12 sample maps in LabelMe format",
                        "basis": [{"material_id": "M004", "quote": "Annotated 12 sample maps"}],
                        "requirement_ids": ["R001"]}
-        bad = {"bullets": [{**good_bullet, "basis": [{"material_id": "M004", "quote": "fabricated"}]}],
+        bad = {"title": "Synthetic Project  |  Map Annotation",
+               "bullets": [{**good_bullet, "basis": [{"material_id": "M004", "quote": "fabricated"}]}],
                "note": ""}
         responses = [
-            bad, {"bullets": [good_bullet], "note": "ok"},
+            bad, {"title": "Synthetic Project  |  Map Annotation", "bullets": [good_bullet], "note": "ok"},
             {"items": [{"quote": "trained YOLO11n on 10 classes", "action": "keep", "reason": "相关"}]},
             {"summary": {"text": "IT graduate.", "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}},
             {"cover_letter": [{"text": "Dear team, I annotated 12 sample maps.",
@@ -207,6 +208,7 @@ class EndToEndTests(unittest.TestCase):
         self.assertIn("[简历底稿（未核对）] 简历底稿", md)
         self.assertIn("保留并强调", md)
         self.assertEqual(llm.calls[0][0], "cv_bullets:Synthetic Project")
+        self.assertEqual(result["projects"][0]["title"], "Synthetic Project  |  Map Annotation")
         self.assertIn("resume_draft", llm.calls[0][1])
 
     def test_step_failure_is_partial_not_fatal(self):
@@ -245,6 +247,22 @@ class RedoClosingTests(unittest.TestCase):
             self.assertEqual(len(result["cover_letter"]), 1)
             self.assertEqual([e["step"] for e in result["errors"]], ["bullets:Other"])
 
+    def test_cover_letter_may_name_a_product_from_the_jd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data = Path(tmp)
+            (data / "profile.md").write_text(PROFILE, encoding="utf-8")
+            materials, by_project, resume_entry = tailor_cv.load_materials(data, RESUME)
+            letter = {"cover_letter": [{"text": "I hold a Master of IT and am keen to support Microsoft 365 users.",
+                                        "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}]}
+            llm = FakeLLM([letter])
+            tailor = tailor_cv.CVTailor(llm, materials, by_project, resume_entry)
+            jd = "Support Microsoft 365 users across the business."
+            self.assertEqual(tailor.cover_letter([], [], [], jd), letter)
+            invented = {"cover_letter": [{"text": "I have supported 365 users.",
+                                          "basis": [{"material_id": "RESUME", "quote": "Master of IT"}]}]}
+            with self.assertRaises(tailor_cv.LLMError):
+                tailor_cv.CVTailor(FakeLLM([invented] * 3), materials, by_project, resume_entry).cover_letter([], [], [], jd)
+
     def test_translated_quote_gets_a_specific_hint(self):
         by_id = {"M001": {"text": "我使用多语言 E5 模型做个人经历章节的向量检索。", "scope": "personal"}}
         item = {"text": "I built retrieval.", "basis": [{"material_id": "M001",
@@ -252,6 +270,35 @@ class RedoClosingTests(unittest.TestCase):
         errors = tailor_cv.validate_basis([item], by_id, ["M001"])
         self.assertIn("不要翻译", errors[0])
         self.assertFalse(tailor_cv.looks_translated("Annotated 12 maps", "Annotated 12 sample maps in LabelMe."))
+
+
+class EnglishOnlyTests(unittest.TestCase):
+    """Resume and cover letter text must be English, whatever the materials are written in."""
+
+    def setUp(self):
+        self.by_id = {"M001": {"text": "我标注了 12 幅示例地图。", "scope": "personal"}}
+        self.basis = [{"material_id": "M001", "quote": "我标注了 12 幅示例地图"}]
+
+    def test_non_english_detection(self):
+        self.assertEqual(tailor_cv.non_english("示例项目：地图标注系统"), "示例项目：地图标注系统")  # full-width colon included
+        self.assertEqual(tailor_cv.non_english("Job Evidence RAG（LLM）"), "（")  # full-width bracket
+        for text in ("Master of IT  ·  AI Track  |  2024.02 – 2026.06", "📍  Perth, WA", "◆ Languages  Python",
+                     "IELTS 6.5 — proficient", "▐  KEY PROJECTS"):
+            self.assertIsNone(tailor_cv.non_english(text), text)
+
+    def test_chinese_text_is_rejected_but_a_chinese_quote_is_fine(self):
+        english = {"text": "Annotated 12 sample maps.", "basis": self.basis}
+        self.assertEqual(tailor_cv.validate_basis([english], self.by_id, ["M001"], english_only=True), [])
+        chinese = {"text": "示例项目：Annotated 12 sample maps.", "basis": self.basis}
+        errors = tailor_cv.validate_basis([chinese], self.by_id, ["M001"], english_only=True)
+        self.assertTrue(any("必须全英文" in e for e in errors))
+        self.assertEqual(tailor_cv.validate_basis([chinese], self.by_id, ["M001"]), [])  # off unless asked
+
+    def test_project_title_must_be_english(self):
+        self.assertEqual(tailor_cv.english_title_errors("Sample Mapping Project  |  Map Annotation", "示例项目"), [])
+        self.assertTrue(tailor_cv.english_title_errors("示例项目：地图标注系统", "示例项目"))
+        self.assertTrue(tailor_cv.english_title_errors("", "示例项目"))
+        self.assertTrue(tailor_cv.english_title_errors("x" * 91, "示例项目"))
 
 
 class MaterialKindTests(unittest.TestCase):
